@@ -30,8 +30,8 @@ are needed to run the scaffold, tests or importer dry-run. Future live imports u
 
 `supabase/migrations/0001_initial_schema.sql` creates ten PostgreSQL tables in one
 transaction. Migration 0001 has been applied to production and must not be edited.
-Schema changes go in new migrations. Migration 0002 is pending deployment; this
-development work does not apply it or connect to Supabase. No authentication
+Schema changes go in new migrations. Production evidence has now been imported;
+local evaluation does not apply migrations or connect to Supabase. No authentication
 foreign key or RLS policies are included.
 
 - `legal_entities` and `brands` hold canonical identities.
@@ -50,8 +50,8 @@ The first rule is representable as `criterion = 'uk_median_gender_pay_gap'`,
 `unknown_handling = 'UNKNOWN'`. Numeric gender pay gap evidence should use percentage
 points (for example, `8.5` with `unit = 'percent'`). `PREFER` is available for soft
 preferences. Unknown handling accepts `UNKNOWN` or `FAIL` and defaults to `UNKNOWN`;
-evaluations also default to `UNKNOWN`. Evaluation logic is not implemented yet, so
-these constraints alone do not calculate or validate a policy decision.
+evaluations also default to `UNKNOWN`. The local evaluator described below supports
+the first required rule; database constraints alone do not calculate a decision.
 
 ## Schema decisions
 
@@ -124,7 +124,7 @@ and reporting period must both be supplied for this uniqueness guarantee; legacy
 claims with NULL identity fields remain valid. The migration also requests a
 PostgREST schema-cache reload.
 
-For a future authorised live import, migration 0002 must first be deployed and
+For an authorised live import, migration 0002 must already be deployed and
 the two Supabase environment variables configured. Omitting `--dry-run` enables
 writes. Entities are deduplicated and upserted in batches of 200, then evidence is
 upserted using returned entity UUIDs. Repeated company keys or employer records
@@ -140,3 +140,54 @@ reconciliation policy. The CSV is loaded in memory (roughly a few MB for 2025).
 
 Unit tests cover transformations, parsing, dry-run isolation and migration 0002's
 upsert constraints, including stable UUIDs on repeated imports.
+
+## Local deterministic evaluation
+
+```sh
+npm run demo:evaluate
+```
+
+This command runs synthetic product/brand relationships and the three user-supplied
+gender-pay values. It loads no environment files, makes no network requests and
+requires no secrets. Fixture IDs and ownership verification are local test data,
+not claims that real product ownership has been independently verified.
+
+`evaluateRule` compares one structured claim using `uk_median_gender_pay_gap`,
+`<=` and a finite numeric threshold. It requires a resolved, verified entity
+context. It returns structured fields only: result, machine-readable reason,
+criterion, threshold, observed value, evidence ID, source name/URL, reporting
+period and legal entity ID. Unsupported rules and invalid evidence return UNKNOWN.
+
+`evaluateProduct` accepts a product, brand/entity records, relationships, evidence,
+one rule and an explicit `as_of` date (`YYYY-MM-DD`). It selects a brand relationship
+only if human/auto verified, confidence is at least 0.9 and at most 1, and the date
+falls within its validity interval. NULL bounds are open-ended; both date bounds
+are inclusive. Malformed dates are ineligible. More than one eligible relationship
+returns `ambiguous_legal_entity`, even if both rows name the same entity.
+
+Evidence must match the selected entity and criterion and be human/auto verified.
+The latest reporting period among verified claims is selected using validated
+`YYYY-YY` periods. Equal latest periods return `ambiguous_evidence`; invalid period
+labels return UNKNOWN because they cannot be ranked. An invalid latest numeric
+value returns UNKNOWN rather than falling back to an older value. Numeric strings,
+NULL, NaN and infinity are rejected. Unit must be `percent`, evidence must have
+one numeric value and only the legal entity subject, and provenance fields must
+be present. Evidence confidence must be in [0, 1]; only relationships have the 0.9
+cutoff in this MVP.
+
+The caller must supply the complete relevant snapshot, not a truncated page of
+relationships or evidence. The pure rule function trusts the caller's resolved
+entity context; `evaluateProduct` performs eligibility checks. No parent-company
+traversal, multi-rule aggregation, soft preferences, unknown-to-FAIL override,
+evidence age cutoff or historical evidence-availability filtering is implemented.
+The date controls relationship validity; evidence uses the latest supplied verified
+reporting period. All otherwise eligible relationship types are considered under
+the MVP criteria. The fixtures use `owned_by`.
+
+Expected demo output:
+
+```text
+Charlotte Tilbury -> PASS (-0.7 <= 10)
+Estée Lauder -> PASS (10 <= 10)
+L'Oréal -> FAIL (18.95 > 10)
+```
