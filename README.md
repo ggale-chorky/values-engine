@@ -22,13 +22,17 @@ TypeScript strict checks cover both source and tests.
 
 `.env.example` documents the three future configuration variables with empty
 placeholders. `.env` and other local environment files are ignored by Git. No keys
-are needed to run the scaffold or tests. Service role keys must remain server-side.
+are needed to run the scaffold, tests or importer dry-run. Future live imports use
+`SUPABASE_URL` and `SUPABASE_SECRET_KEY`; secret keys must remain server-side.
+`COMPANIES_HOUSE_API_KEY` remains a placeholder for future registry integration.
 
 ## Database
 
 `supabase/migrations/0001_initial_schema.sql` creates ten PostgreSQL tables in one
-transaction. It has not been applied to a live database. No Supabase connection,
-authentication foreign key, RLS policy or deployment setup is included.
+transaction. Migration 0001 has been applied to production and must not be edited.
+Schema changes go in new migrations. Migration 0002 is pending deployment; this
+development work does not apply it or connect to Supabase. No authentication
+foreign key or RLS policies are included.
 
 - `legal_entities` and `brands` hold canonical identities.
 - `brand_entity_relationships` links brands to legal entities;
@@ -53,8 +57,10 @@ these constraints alone do not calculate or validate a policy decision.
 
 - UUID keys use PostgreSQL's built-in `gen_random_uuid()`; timestamps use
   `timestamptz`. Simple triggers maintain `updated_at`.
-- Company numbers, LEIs and GTINs are text to preserve leading zeros. Partial
-  unique indexes apply only to supplied identifiers. Ingestion must normalise
+- Company numbers, LEIs and GTINs are text to preserve leading zeros. Migration
+  0002 replaces the partial company-number index with a normal UNIQUE constraint
+  on `(jurisdiction, company_number)` for PostgREST upserts; multiple NULL company
+  numbers remain allowed. LEI and GTIN indexes remain partial. Ingestion must normalise
   jurisdiction codes and identifiers consistently; GTIN lengths are checked, but
   check digits and equivalent zero-padded forms are not normalised by SQL.
 - Product brands may be unknown. Missing identifiers and offer prices use NULL.
@@ -76,3 +82,61 @@ checks constraints, identifier uniqueness, relationships, offers, the first rule
 UNKNOWN defaults, foreign keys and timestamp updates. PGlite is a test-only
 dependency; tests require no credentials or database service. They do not verify
 Supabase-specific deployment or access-control configuration.
+
+## UK Gender Pay Gap import
+
+```sh
+npm run import:gpg -- --year=2025 --dry-run
+```
+
+The year defaults to `2025`, representing reporting period `2025-26`. The importer
+downloads the [official CSV](https://gender-pay-gap.service.gov.uk/viewing/download-data/2025),
+validates headers and CSV structure, and keeps identifiers as strings. It trims and
+uppercases company numbers without removing zeros or prefixes. Legal entities use
+jurisdiction `GB` and `CurrentName`, falling back to `EmployerName`.
+
+Dry-run downloads and performs all transformations but returns before loading the
+Supabase writer or dotenv. It needs no secrets and makes no database requests.
+Output includes total rows, rows with company numbers, valid evidence rows,
+skipped rows by reason, unique upsert counts and three sample records. Sample
+`legal_entity_id` values are NULL because database UUIDs cannot be resolved in a
+dry-run; the accompanying `legal_entity_lookup` gives the exact company key used
+to resolve them during an eventual live import.
+
+Rows without company numbers are excluded. Missing names also exclude the entity.
+Rows with a company number and name still produce an entity if the median figure
+or employer ID is invalid, but produce no evidence. `skipped_rows` counts rows
+that cannot produce evidence, including those that still produce an entity.
+Zero and negative median values are preserved. Blank, non-finite or malformed
+numbers never become zero.
+
+Evidence uses `uk_median_gender_pay_gap`, `percent`, source name `UK Gender Pay Gap
+Service`, source type `government`, the employer ID and source URL, reporting
+period, retrieval timestamp, confidence `1` and `auto_verified`. These attributes
+record the organisation's reported figure from the official dataset; they do not
+assert independent verification of the employer's calculation or any moral judgement.
+Metadata includes only EmployerName, EmployerId, EmployerSize, DateSubmitted and
+CompanyLinkToGPGInfo. Submission dates remain source text without an invented timezone.
+
+Migration 0002 adds `evidence.source_record_id` and a UNIQUE constraint on
+`(source_name, source_record_id, claim_type, reporting_period)`. Source record ID
+and reporting period must both be supplied for this uniqueness guarantee; legacy
+claims with NULL identity fields remain valid. The migration also requests a
+PostgREST schema-cache reload.
+
+For a future authorised live import, migration 0002 must first be deployed and
+the two Supabase environment variables configured. Omitting `--dry-run` enables
+writes. Entities are deduplicated and upserted in batches of 200, then evidence is
+upserted using returned entity UUIDs. Repeated company keys or employer records
+use the last eligible CSV row; an employer ID linked to conflicting company
+numbers aborts before writes. Separate employer IDs may report against the same
+company and remain separate evidence records.
+
+The import is not one database transaction: a failed later batch can leave earlier
+batches committed. Reruns update the same identities and can resume safely.
+It does not delete older evidence when a later CSV row is removed or becomes
+invalid. Corrections, conflicting company names and stale evidence need a future
+reconciliation policy. The CSV is loaded in memory (roughly a few MB for 2025).
+
+Unit tests cover transformations, parsing, dry-run isolation and migration 0002's
+upsert constraints, including stable UUIDs on repeated imports.
