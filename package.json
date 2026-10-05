@@ -10,7 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "import:gpg": "tsx src/scripts/import-gender-pay-gap.ts",
-    "demo:evaluate": "node --import tsx src/scripts/demo-evaluate.ts"
+    "demo:evaluate": "node --import tsx src/scripts/demo-evaluate.ts",
+    "demo:seed": "node --import tsx src/scripts/seed-demo.ts",
+    "demo:live": "node --import tsx src/scripts/demo-live.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

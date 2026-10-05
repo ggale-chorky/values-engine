@@ -191,3 +191,73 @@ Charlotte Tilbury -> PASS (-0.7 <= 10)
 Estée Lauder -> PASS (10 <= 10)
 L'Oréal -> FAIL (18.95 > 10)
 ```
+
+## Database demo adapter and seed
+
+The following commands require a configured database. They were not run during
+implementation; tests use fakes and the existing local PGlite tests only.
+
+```sh
+npm run demo:seed -- --dry-run
+npm run demo:seed
+npm run demo:live
+```
+
+Unlike the CSV importer's dry-run, **demo seed dry-run reads the configured
+database**. It performs zero writes. Backend scripts read `SUPABASE_URL` and
+`SUPABASE_SECRET_KEY` from the environment or local `.env`. Missing configuration
+fails with a clear message. The server client disables session persistence,
+automatic token refresh and URL session detection. Never import it into browser
+code; the module also rejects browser execution. Credentials and raw SDK errors
+are not printed.
+
+`evaluate-product-from-db.ts` loads the policy, its rules, product, brand, all brand
+relationships, referenced legal entities and matching gender-pay evidence. Database
+rows are validated and mapped into the existing pure evaluator, which still owns
+relationship eligibility, latest-period selection, UNKNOWN handling and numeric
+comparison. The adapter accepts exactly one rule on an active policy:
+`uk_median_gender_pay_gap <= 10`, `REQUIRE`, `UNKNOWN`, with no text threshold.
+Other rule sets, inactive policies and missing products/policies fail clearly.
+Missing entity records, relationships or evidence flow to the engine as UNKNOWN.
+Invalid latest evidence is not replaced by an older passing result.
+
+Reads are ordered by ID and paginated until empty, advancing by the actual page
+length to tolerate smaller server row limits. Read errors fail rather than becoming
+missing evidence. `demo:live` has only a read interface and prints JSON provenance
+for Charlotte Tilbury Magic Cream, Estée Lauder Advanced Night Repair and Vichy
+Minéral 89. It does not persist evaluations or assume the expected results.
+
+The seeder looks up the three existing GB legal entities by company numbers
+`08037372`, `00659213` and `00271555`. It never creates/updates legal entities or
+evidence. Every lookup and conflict check happens before the first write. A missing
+entity blocks the entire seed; dry-run reports missing entities and planned actions
+with `ready: false` and a non-zero exit status. Evidence previews are calculated by
+the pure engine under the *proposed* relationship, not asserted as already seeded.
+
+Objects are matched by exact brand/product names and the demo policy name.
+Relationships must be unambiguous and match the expected entity and `operated_by`
+type. Existing matching rows retain their UUIDs; missing rows get new UUIDs. An
+existing policy rule must already match the supported rule. Duplicates, conflicting
+product brands, user-specific policies with the same name and conflicting links
+abort before writes. Reused links are updated to confidence 1, human_verified,
+open-ended validity and the current `last_verified_at`; the demo policy is activated.
+No GTINs, MPNs, offers, prices or product URLs are created.
+
+These first-party source URLs were checked read-only on 2026-10-05 and are stored
+with descriptive source names for the requested `operated_by` links:
+
+- [Charlotte Tilbury UK Terms & Conditions](https://www.charlottetilbury.com/uk/help/terms-and-conditions)
+- [Estée Lauder UK Loyalty Terms & Conditions](https://www.esteelauder.co.uk/terms-conditions-loyalty)
+- [Vichy UK Terms of Use](https://www.vichy.co.uk/terms-of-use)
+
+All URLs were resolved, so the existing NOT NULL relationship source URL constraint
+can be retained. No schema changes or migration 0003 are needed; migrations 0001
+and 0002 are unchanged.
+
+Run only one seeder at a time: lookup-before-write does not protect against
+concurrent inserts without additional database uniqueness/locking. Multi-request
+seeding is not atomic; sequential retries recover from a partially completed run
+without duplicating matched records. Paginated reads are not a transactional
+snapshot, so avoid concurrent edits when an exactly repeatable evaluation is needed.
+No actual production values, credentials, access permissions or connectivity were
+verified in this milestone.
