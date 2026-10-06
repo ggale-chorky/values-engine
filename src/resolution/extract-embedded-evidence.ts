@@ -8,7 +8,7 @@ export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { cand
   const candidates: ExtractedCandidate[] = [];
   type Node = ReturnType<typeof parseDocument>['children'][number];
   let visited = 0;
-  function values(value: unknown, path: string, channel: ExtractionChannel, depth = 0): void {
+  function values(value: unknown, path: string, channel: ExtractionChannel, depth = 0, sections: string[] = []): void {
     if (++visited > 10_000 || depth > 32) { incomplete = true; return; }
     if (typeof value === 'string') {
       if (value.length > 100_000) { incomplete = true; return; }
@@ -16,12 +16,16 @@ export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { cand
       for (const candidate of found) for (const occurrence of candidate.occurrences) {
         occurrence.extraction_channel = channel;
         occurrence.retrieval_channel = 'embedded_page_data';
+        occurrence.block.heading_context = [...sections, ...occurrence.block.heading_context];
         occurrence.block.dom_path = `${path}/${occurrence.block.dom_path}`;
       }
       candidates.push(...found);
-    } else if (Array.isArray(value)) value.forEach((item, index) => values(item, `${path}[${index}]`, channel, depth + 1));
+    } else if (Array.isArray(value)) value.forEach((item, index) => values(item, `${path}[${index}]`, channel, depth + 1, sections));
     else if (value && typeof value === 'object') {
       const record = value as Record<string, unknown>;
+      const section = [record.title, record.heading, record.sectionName, record.section_name, record.name]
+        .find(item => typeof item === 'string' && item.length <= 200 && /\bterms\b|\bconditions\b/i.test(item));
+      const context = typeof section === 'string' ? [...sections, section] : sections;
       const name = record.legalName ?? record.name;
       const number = record.companyNumber ?? record.company_number ?? record.registrationNumber;
       // These explicit fields share one object; never infer a role from a generic publisher/name key.
@@ -32,10 +36,12 @@ export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { cand
           occurrence.extraction_channel = channel; occurrence.retrieval_channel = 'embedded_page_data';
           occurrence.source_snippet = JSON.stringify({ legalName: name, companyNumber: number });
           occurrence.block.text = occurrence.source_snippet; occurrence.block.dom_path = path;
+          occurrence.block.heading_context = context;
         }
         candidates.push(...fields);
       }
-      for (const [key, item] of Object.entries(value)) values(item, `${path}[${JSON.stringify(key)}]`, channel, depth + 1);
+      for (const [key, item] of Object.entries(value)) values(item, `${path}[${JSON.stringify(key)}]`, channel, depth + 1,
+        /\bterms\b|\bconditions\b/i.test(key) && key.length <= 200 ? [...context, key] : context);
     }
   }
   let scriptIndex = 0;

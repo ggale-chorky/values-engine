@@ -13,6 +13,7 @@ export interface TextBlock {
   authority: 'primary' | 'secondary';
 }
 export interface CandidateOccurrence {
+  context_mismatch?: boolean;
   source_url: string;
   extraction_channel: ExtractionChannel;
   retrieval_channel: RetrievalChannel;
@@ -25,6 +26,13 @@ export interface CandidateOccurrence {
 }
 export interface ExtractedCandidate { company_number: string; source_url: string; occurrences: CandidateOccurrence[] }
 export const isShoppingRole = (role: CandidateRole) => ['site_operator', 'seller', 'brand_operator'].includes(role);
+
+/** Only explicit brand labels/scopes count; legal company names need not match a brand. */
+export function evidenceContextMismatch(text: string, brand: string): boolean {
+  const normalise = (value: string) => value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const labels = [...text.matchAll(/\b(?:brand|brand name)\s*:\s*([^\n.;]{1,80})|\bterms for [“"]([^”"\n]{1,80})[”"]/gi)];
+  return labels.some(match => normalise((match[1] ?? match[2])!.trim()) !== normalise(brand));
+}
 
 type Node = ReturnType<typeof parseDocument>['children'][number];
 const boundaries = new Set(['p', 'li', 'td', 'th', 'dt', 'dd', 'address', 'div', 'section', 'article', 'main', 'body', 'header', 'footer', 'table', 'tr', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
@@ -95,6 +103,15 @@ export function pageText(content: string, type: 'text/html' | 'text/plain' = 'te
 
 function roleFor(beforeName: string, afterName: string, block: TextBlock): { role: CandidateRole; role_basis: CandidateOccurrence['role_basis'] } {
   if (/\b(former|previous|formerly|no longer|not)\b/i.test(beforeName + afterName)) return { role: 'unknown', role_basis: 'unknown' };
+  // Explicit defined roles take precedence over general "we/us" operator wording.
+  const licensor = afterName.match(/\(\s*[“"'](?:the\s+)?Licensor[”"'][^)]*\)/i);
+  const noOtherSubject = (text: string) => !/\b(limited|ltd|plc|llp|they|third.party|another|other company|suppliers|retailers|while|whereas)\b/i.test(text.replace(/\([^)]*\)/g, ' '));
+  if (licensor && noOtherSubject(afterName.slice(0, licensor.index))) return { role: 'licensor', role_basis: 'explicit' };
+  const supply = afterName.match(/\b(?:supply|supplies|sell|sells)\b[^.!?;]{0,400}\b(?:products|goods)\b[^.!?;]{0,400}\bto\s+you\b/i);
+  if (supply && noOtherSubject(afterName.slice(0, supply.index))
+    && !/[.!?]\s+(?!we\b)/i.test(afterName.slice(0, supply.index).replace(/\([^)]*\)/g, ' '))) {
+    return { role: 'seller', role_basis: 'explicit' };
+  }
   const patterns: [CandidateRole, RegExp][] = [
     ['seller', /(?:seller\s+(?:is|:)|(?:products|goods)\s+are\s+sold\s+by)\s*$/i],
     ['site_operator', /(?:operated\s+by|site operator\s+(?:is|:))\s*$/i],

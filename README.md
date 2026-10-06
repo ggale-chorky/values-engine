@@ -414,16 +414,22 @@ assignments and streaming JavaScript payloads are deliberately unsupported.
 The official `openai` SDK reads `OPENAI_API_KEY` only when discovery is needed.
 Set it locally to enable the fallback; the example file contains only a blank
 placeholder. Missing keys/API failures retain the direct result and a structured
-attempt status. The service makes one Responses request using `gpt-5.5`,
+attempt status. The service uses Responses with `gpt-5.5`,
 `web_search`, `filters.allowed_domains`, and `include: ["web_search_call.action.sources"]`,
-with a 45-second timeout, no retries, no SDK logging, `store: false` and an output
-limit. The supplied domain (including its subdomains) is the only search scope;
+with a 45-second timeout per attempt, no SDK logging, `store: false` and an output
+limit. The service retries at most once after 500 ms for 429, 5xx and recognised
+network failures; SDK retries remain disabled. It never retries 400/401/403.
+Failures retain safe HTTP status, allowlisted API type/code, retryability and
+attempt count, without raw messages, headers or request payloads. The supplied domain (including its subdomains) is the only search scope;
 there is no broader-domain retry. See the [official OpenAI web-search guide](https://developers.openai.com/api/docs/guides/tools-web-search).
 
 Structured output is validated with Zod. The full API web-search source list is
 retained, along with rejected-candidate reasons. Candidates must have an HTTP(S)
-first-party URL, a matching source-domain field and a matching URL in that source
-list. The model's separate name/number/role fields are diagnostic suggestions;
+first-party URL and a matching URL in that source list. Parsed URL hostnames are
+authoritative: comparison lowercases, removes a trailing dot and strips leading
+`www.`. Only the allowed domain or genuine subdomains pass; deceptive suffixes
+and lookalikes do not. The model-produced `source_domain` is retained for
+diagnostics only, including when it is absent or disagrees. The model's separate name/number/role fields are diagnostic suggestions;
 only deterministic extraction from its attributed evidence text enters Companies
 House verification. No legal-name-only fuzzy lookup is implemented: name-only
 claims require REVIEW. API/source-list/schema failures fail closed.
@@ -438,3 +444,22 @@ ownership of a brand. Even PROPOSE is only a reviewable proposal, never a graph
 fact. The demo prints channel attempts, recommendations and complete provenance.
 All discovery tests mock both OpenAI and Companies House; do not run `resolve:demo`
 unless live external calls are intended.
+
+
+### Resolver V2.1 role and context safeguards
+
+Explicit supply/sell-products-to-you wording identifies a seller; an explicit
+parenthetical definition of “Licensor” identifies a licensor even if it also
+uses “we/us”. Recognised transactional wording remains tied to its named company
+and identifier, with negation and competing subjects excluded. Embedded JSON
+section titles/headings/names are preserved on candidate blocks, including
+subscription and app terms. Those metadata headings do not create a seller role.
+
+Verified licensors, promoters and data controllers remain reviewable evidence but
+cannot satisfy a shopping relationship on their own or compete with a separate
+verified seller. Explicit differing `Brand:` labels or quoted `Terms for "Brand"`
+scopes are flagged `context_mismatch`; the resolver does not guess brand context
+from a legal-company-name mismatch (for example, Vichy versus L'Oreal).
+Discovery failure retains existing direct/embedded proposals and diagnostics.
+The Vichy and Charlotte fixtures are representative local regressions, not fresh
+live retrievals; the Islestarr identifier in the embedded fixture is synthetic.

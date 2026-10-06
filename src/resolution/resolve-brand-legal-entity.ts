@@ -1,13 +1,13 @@
 import { CompaniesHouseError } from './companies-house.js';
 import type { CompaniesHouseLookup, CompanyProfile } from './companies-house.js';
-import { extractCompanyCandidates, isShoppingRole } from './extract-company-candidates.js';
+import { evidenceContextMismatch, extractCompanyCandidates, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, CandidateRole, ExtractedCandidate } from './extract-company-candidates.js';
 import { contentDiagnostics, fetchFirstPartyPage } from './fetch-first-party-page.js';
 import { inspectEmbeddedEvidence, mergeCandidates } from './extract-embedded-evidence.js';
 import type { PageResult, RetrievalDiagnostics } from './fetch-first-party-page.js';
 
 export type ResolutionReason = 'source_blocked' | 'source_unavailable' | 'insufficient_visible_text' | 'no_company_evidence'
-  | 'retrieved_content_incomplete' | 'relationship_role_inadequate' | 'company_verification_failed' | 'conflicting_company_evidence'
+  | 'context_mismatch' | 'retrieved_content_incomplete' | 'relationship_role_inadequate' | 'company_verification_failed' | 'conflicting_company_evidence'
   | 'incomplete_verification' | 'company_inactive' | 'legal_name_unavailable' | 'verified_operating_entity';
 
 export interface Signal { code: string; weight: number; detail: string | number | boolean | null }
@@ -107,15 +107,18 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     }
   }
   const incomplete = all.length > candidates.length || checked.some(item => item.failure && item.failure !== 'not_found');
+  for (const candidate of all) for (const occurrence of candidate.occurrences) {
+    if (evidenceContextMismatch([occurrence.block.text, ...occurrence.block.heading_context].join('\n'), brand)) occurrence.context_mismatch = true;
+  }
   const relevant = (candidate: ExtractedCandidate) => candidate.occurrences.filter(occurrence =>
-    occurrence.block.authority === 'primary' && isShoppingRole(occurrence.role));
+    !occurrence.context_mismatch && occurrence.block.authority === 'primary' && isShoppingRole(occurrence.role));
   const operators = all.filter(candidate => relevant(candidate).length > 0);
   return checked.map(({ candidate, profile, failure }) => {
     const base = unresolved(brand, candidate.source_url, 'labelled_company_number', candidate.company_number);
     base.retrieval_diagnostics = diagnostics;
     base.company_number = candidate.company_number;
     const selected = relevant(candidate);
-    const considered = selected.length ? selected : candidate.occurrences.filter(occurrence => occurrence.block.authority === 'primary');
+    const considered = selected.length ? selected : candidate.occurrences.filter(occurrence => !occurrence.context_mismatch && occurrence.block.authority === 'primary');
     const supporting = (considered[0] ?? candidate.occurrences[0])!;
     base.source_snippet = supporting.source_snippet;
     base.source_url = supporting.source_url;
@@ -143,6 +146,8 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     base.company_status = profile.company_status;
     base.companies_house_match = profile;
     const signals = base.signals;
+    const contextMismatch = candidate.occurrences.every(occurrence => occurrence.context_mismatch);
+    if (candidate.occurrences.some(occurrence => occurrence.context_mismatch)) signals.push({ code: 'context_mismatch', weight: 0, detail: 'Explicit evidence brand scope differs from requested brand' });
     signals.push({ code: 'companies_house_number_match', weight: 0.8, detail: profile.company_number });
     const names = considered.flatMap(item => item.possible_legal_name ? [item.possible_legal_name] : []);
     const nameAgreement = names.length > 0 && names.every(name => normaliseLegalName(name) === normaliseLegalName(profile.company_name));
@@ -175,7 +180,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     base.confidence = { score, level: score >= 0.9 ? 'HIGH' : score >= 0.6 ? 'MEDIUM' : 'LOW', calibrated: false };
     base.recommended_action = nameAgreement && active && roleResolved && !ambiguous && !incomplete ? 'PROPOSE' : 'REVIEW';
     base.reason = base.recommended_action === 'PROPOSE' ? 'verified_operating_entity'
-      : nameConflict || ambiguous ? 'conflicting_company_evidence'
+      : contextMismatch ? 'context_mismatch' : nameConflict || ambiguous ? 'conflicting_company_evidence'
       : !roleResolved ? 'relationship_role_inadequate'
       : incomplete ? 'incomplete_verification' : !active ? 'company_inactive' : 'legal_name_unavailable';
     return base;

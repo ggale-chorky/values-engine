@@ -161,6 +161,6 @@ describe('OpenAI Responses adapter (mocked transport)', () => {
     const request = vi.fn(async () => { throw new Error('secret API detail'); });
     expect((await discoverFirstPartyEvidence({ brand: 'Example', domain: 'https://example.com' }, request)).status).toBe('invalid_domain');
     expect(request).not.toHaveBeenCalled();
-    expect(await discoverFirstPartyEvidence({ brand: 'Example', domain: 'example.com' }, request)).toEqual({ status: 'api_error', candidates: [], sources: [] });
+    expect(await discoverFirstPartyEvidence({ brand: 'Example', domain: 'example.com' }, request)).toEqual({ status: 'api_error', candidates: [], sources: [], attempts: 1, error: { http_status: null, type: 'api_error', code: null, retryable: false } });
   });
 });

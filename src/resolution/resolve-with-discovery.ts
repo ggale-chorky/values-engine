@@ -1,7 +1,7 @@
 import type { CompaniesHouseLookup } from './companies-house.js';
-import { discoverFirstPartyEvidence, firstPartyUrl, normaliseDiscoveryDomain } from './discover-first-party-evidence.js';
+import { discoverFirstPartyEvidence, discoveryError, firstPartyUrl, normaliseDiscoveryDomain } from './discover-first-party-evidence.js';
 import type { DiscoveryResult, EvidenceDiscovery } from './discover-first-party-evidence.js';
-import { extractCompanyCandidates } from './extract-company-candidates.js';
+import { evidenceContextMismatch, extractCompanyCandidates } from './extract-company-candidates.js';
 import type { ExtractedCandidate } from './extract-company-candidates.js';
 import { mergeCandidates } from './extract-embedded-evidence.js';
 import type { PageResult } from './fetch-first-party-page.js';
@@ -12,7 +12,7 @@ export interface ResolverResult {
   proposals: Proposal[];
   direct_proposals: Proposal[];
   discovery: DiscoveryResult | null;
-  discovery_rejections: { index: number; reason: 'missing_or_wrong_domain' | 'source_not_in_search_sources' | 'no_deterministic_identifier' }[];
+  discovery_rejections: { index: number; reason: 'missing_or_wrong_domain' | 'source_not_in_search_sources' | 'no_deterministic_identifier' | 'context_mismatch' }[];
   attempts: { channel: 'direct_http' | 'embedded_page_data' | 'openai_web_search'; outcome: string }[];
 }
 
@@ -37,7 +37,7 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
   }
   let discovery: DiscoveryResult;
   try { discovery = await (dependencies.discover ?? discoverFirstPartyEvidence)({ brand: input.brand_name, domain }); }
-  catch { discovery = { status: 'api_error', candidates: [], sources: [] }; }
+  catch (error) { discovery = { status: 'api_error', candidates: [], sources: [], error: discoveryError(error) }; }
   result.discovery = discovery;
   if (discovery.status !== 'success') {
     result.attempts.push({ channel: 'openai_web_search', outcome: discovery.status });
@@ -47,15 +47,18 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
   const unverified: Proposal[] = [];
   discovery.candidates.forEach((candidate, index) => {
     const url = firstPartyUrl(candidate.source_url, domain);
-    if (!url || !candidate.source_domain || candidate.source_domain.toLowerCase() !== new URL(url).hostname) {
+    if (!url) {
       result.discovery_rejections.push({ index, reason: 'missing_or_wrong_domain' }); return;
     }
     if (!discovery.sources.some(source => firstPartyUrl(source.url, domain) === url)) {
       result.discovery_rejections.push({ index, reason: 'source_not_in_search_sources' }); return;
     }
+    if (evidenceContextMismatch(candidate.evidence_text, input.brand_name)) {
+      result.discovery_rejections.push({ index, reason: 'context_mismatch' }); return;
+    }
     // Treat quote/claim text as untrusted plain text. Never turn model-supplied
     // name/number/role fields into a synthetic sentence or a verified relationship.
-    const extracted = extractCompanyCandidates(candidate.evidence_text, url, 'text/plain');
+    const extracted = extractCompanyCandidates(candidate.evidence_text, candidate.source_url!, 'text/plain');
     if (!extracted.length) {
       result.discovery_rejections.push({ index, reason: 'no_deterministic_identifier' });
       const proposal = unresolved(input.brand_name, url, 'discovery_identifier_unverified');

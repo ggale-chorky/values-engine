@@ -14,7 +14,15 @@ const candidateSchema = z.object({
 const answerSchema = z.object({ candidates: z.array(candidateSchema).max(20) });
 export type DiscoveryCandidate = z.infer<typeof candidateSchema>;
 export interface WebSource { type: string; url: string }
+export interface DiscoveryError {
+  http_status: number | null;
+  type: string;
+  code: string | null;
+  retryable: boolean;
+}
 export interface DiscoveryResult {
+  error?: DiscoveryError;
+  attempts?: number;
   status: 'success' | 'missing_api_key' | 'invalid_domain' | 'invalid_response' | 'api_error';
   candidates: DiscoveryCandidate[];
   sources: WebSource[];
@@ -24,7 +32,7 @@ export type EvidenceDiscovery = (input: DiscoveryInput) => Promise<DiscoveryResu
 export type DiscoveryRequest = (params: ResponseCreateParamsNonStreaming) => Promise<unknown>;
 
 export function normaliseDiscoveryDomain(domain: string): string | null {
-  const value = domain.toLowerCase().replace(/^www\./, '');
+  const value = domain.toLowerCase().replace(/\.$/, '').replace(/^www\./, '');
   if (value.length > 253 || isIP(value) || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(value)
     || /\.(?:local|internal|test|invalid|localhost)$/.test(value)) return null;
   return value;
@@ -35,15 +43,33 @@ export function firstPartyUrl(value: string | null, domain: string): string | nu
   if (!value) return null;
   try {
     const url = new URL(value);
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port
-      || !(url.hostname === domain || url.hostname.endsWith(`.${domain}`))) return null;
+    const allowed = normaliseDiscoveryDomain(domain);
+    const host = normaliseDiscoveryDomain(url.hostname);
+    if (!allowed || !host || !['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port
+      || !(host === allowed || host.endsWith(`.${allowed}`))) return null;
+    url.hostname = host;
     url.hash = '';
     return url.href;
   } catch { return null; }
 }
 
-/** One bounded, domain-filtered call. No keys or raw API errors enter the result. */
-export async function discoverFirstPartyEvidence(input: DiscoveryInput, request?: DiscoveryRequest): Promise<DiscoveryResult> {
+/** Only allowlisted machine codes are retained; never messages, headers or payloads. */
+export function discoveryError(error: unknown): DiscoveryError {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const status = typeof record.status === 'number' && Number.isInteger(record.status) && record.status >= 100 && record.status <= 599 ? record.status : null;
+  const cause = record.cause && typeof record.cause === 'object' ? record.cause as Record<string, unknown> : {};
+  const networkCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT']);
+  const network = error instanceof OpenAI.APIConnectionError || networkCodes.has(String(record.code)) || networkCodes.has(String(cause.code));
+  const types = new Set(['invalid_request_error', 'authentication_error', 'permission_error', 'rate_limit_error', 'server_error', 'api_error', 'insufficient_quota']);
+  const codes = new Set(['rate_limit_exceeded', 'insufficient_quota', 'invalid_api_key', 'model_not_found', 'invalid_parameter', 'unsupported_parameter', 'server_error', 'internal_error', 'access_denied']);
+  return { http_status: status, type: typeof record.type === 'string' && types.has(record.type) ? record.type : network ? 'network_error' : 'api_error',
+    code: typeof record.code === 'string' && (codes.has(record.code) || networkCodes.has(record.code)) ? record.code : null,
+    retryable: status === 429 || (status !== null && status >= 500) || (status === null && network) };
+}
+
+/** At most two domain-filtered attempts with one 500ms delay. No raw errors escape. */
+export async function discoverFirstPartyEvidence(input: DiscoveryInput, request?: DiscoveryRequest,
+  pause: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<DiscoveryResult> {
   const empty = (status: DiscoveryResult['status']): DiscoveryResult => ({ status, candidates: [], sources: [] });
   const domain = normaliseDiscoveryDomain(input.domain);
   if (!domain) return empty('invalid_domain');
@@ -60,7 +86,18 @@ export async function discoverFirstPartyEvidence(input: DiscoveryInput, request?
   try {
     const send: DiscoveryRequest = request ?? (params => new OpenAI({ apiKey: process.env.OPENAI_API_KEY!,
       baseURL: 'https://api.openai.com/v1', logLevel: 'off', maxRetries: 0, timeout: 45_000 }).responses.create(params));
-    const raw = z.object({ status: z.string(), output: z.array(z.unknown()), output_text: z.string().optional() }).parse(await send(params));
+    let response: unknown;
+    let attempts = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      attempts++;
+      try { response = await send(params); break; }
+      catch (error) {
+        const safe = discoveryError(error);
+        if (!safe.retryable || attempt === 1) return { ...empty('api_error'), error: safe, attempts };
+        await pause(500);
+      }
+    }
+    const raw = z.object({ status: z.string(), output: z.array(z.unknown()), output_text: z.string().optional() }).parse(response);
     let searched = false;
     let sourcesComplete = true;
     const texts: string[] = [];
@@ -81,7 +118,7 @@ export async function discoverFirstPartyEvidence(input: DiscoveryInput, request?
     }
     if (raw.status !== 'completed' || !searched || !sourcesComplete) return { ...empty('invalid_response'), sources };
     const answer = answerSchema.parse(JSON.parse(texts.join('') || raw.output_text || ''));
-    return { status: 'success', candidates: answer.candidates, sources };
+    return { status: 'success', candidates: answer.candidates, sources, attempts };
   } catch (error) {
     // Validation failures and request failures both fail closed, without echoing response data.
     return { ...empty(error instanceof z.ZodError || error instanceof SyntaxError ? 'invalid_response' : 'api_error'), sources };
