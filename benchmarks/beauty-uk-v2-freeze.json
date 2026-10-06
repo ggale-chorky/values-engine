@@ -1,0 +1,23 @@
+{
+  "resolver_version": "V2.4.1",
+  "benchmark_input_filename": "benchmarks/beauty-uk-v2.csv",
+  "benchmark_input_sha256": "189af782fc5bff00eb132e7b9cc164e35e9b27224be439afc97a6273ac35712e",
+  "git_commit_sha": "94b33f9d8d5b053ec1d7f89c2ba5d43693be1048",
+  "resolver_target_market": "GB",
+  "evaluation_kind": "blind_holdout",
+  "timestamp": "2026-10-06T23:22:26.441959+00:00",
+  "files": {
+    "src/resolution/companies-house.ts": "cb7c57bdc5f4e1ae037dde55300d45ad3cdb900c7e032d2c68fc9ccaaddef8e7",
+    "src/resolution/discover-first-party-evidence.ts": "7b3e74fa89d1d754128d5a46bfc9fe40fe04534b4d52ccc6b32b8bb6a6703cae",
+    "src/resolution/evidence-market.ts": "720bf857f293b5e4980a6c417703040bc9ec4f33d3e2bdea81130e82012b9662",
+    "src/resolution/extract-company-candidates.ts": "e8d1eceed27f8e8c8fd137ffc9d11e221f6fcd4c1480c237b26aa2b799df85fa",
+    "src/resolution/extract-embedded-evidence.ts": "267eeb6e39d0d81906a3bbb9ef633ed877eda4be2781f16f20c0b57f1dd2d139",
+    "src/resolution/fetch-first-party-page.ts": "04c248ea268fefb97033ad6fa488dcb6f9fdc2dea8c3d86694faf28bf45d108b",
+    "src/resolution/fuse-document-evidence.ts": "04f8e9a9594470025c863b52714db251658f995699185a950db17d2ce2d00504",
+    "src/resolution/legal-name.ts": "bcb08619543da4545e6fd81daf484433daf383818d461809908b9e83c11c8d51",
+    "src/resolution/resolve-brand-legal-entity.ts": "f65d5a4ab16c41172a717ae5b3d61fd8b8e93b073d00b115436e9ed6f5edea4c",
+    "src/resolution/resolve-with-discovery.ts": "eddccdddca7b8b1abfc699261cec950755d3706bee1d0c908dcc16b55ae6b6b8",
+    "src/resolution/select-candidate.ts": "2dae034d9c330a342b19442d0c68c2b6279f917a16b09ec8813ab21e1e7ea302",
+    "src/resolution/source-priority.ts": "6f4126f433a7ad8e781eb09f72783c54d76ae94fdc014fa43d5d6ba6c4301972"
+  }
+}
