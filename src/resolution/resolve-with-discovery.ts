@@ -1,12 +1,13 @@
+import { normaliseLegalName } from './legal-name.js';
 import { fuseDocumentEvidence } from './fuse-document-evidence.js';
-import { marketContextMismatch } from './evidence-market.js';
+import { marketContextMismatch, occurrenceMarketMismatch } from './evidence-market.js';
 import type { TargetMarket } from './evidence-market.js';
 import { selectCandidate } from './select-candidate.js';
 import type { OverallSelection } from './select-candidate.js';
 import type { CompaniesHouseLookup } from './companies-house.js';
 import { discoverFirstPartyEvidence, discoveryError, firstPartyUrl, normaliseDiscoveryDomain } from './discover-first-party-evidence.js';
 import type { DiscoveryResult, EvidenceDiscovery } from './discover-first-party-evidence.js';
-import { evidenceContextMismatch, extractCompanyCandidates, extractNamedEvidence } from './extract-company-candidates.js';
+import { evidenceContextMismatch, extractCompanyCandidates, extractNamedEvidence, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, ExtractedCandidate } from './extract-company-candidates.js';
 import { sourcePriority } from './source-priority.js';
 import { contentDiagnostics, fetchFirstPartyPage } from './fetch-first-party-page.js';
@@ -16,7 +17,7 @@ import { resolveBrandLegalEntity, unresolved, verifyCandidateEvidence } from './
 import type { Proposal } from './resolve-brand-legal-entity.js';
 
 export interface ResolverResult extends OverallSelection {
-  discovered_sources?: { url: string; outcome: string; evidence_origin: 'discovered_url_direct' | 'search_evidence_fallback'; diagnostics: PageResult['diagnostics'] | null }[];
+  discovered_sources?: { url: string; outcome: string; evidence_origin: NonNullable<CandidateOccurrence['evidence_origin']>; diagnostics: PageResult['diagnostics'] | null }[];
   named_role_evidence: CandidateOccurrence[];
   proposals: Proposal[];
   direct_proposals: Proposal[];
@@ -55,7 +56,7 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
   try { discovery = await (dependencies.discover ?? discoverFirstPartyEvidence)({ brand: input.brand_name, domain }); }
   catch (error) { discovery = { status: 'api_error', candidates: [], sources: [], error: discoveryError(error) }; }
   result.discovery = discovery;
-  if (discovery.status !== 'success') {
+  if (discovery.status !== 'success' && discovery.status !== 'invalid_response') {
     result.attempts.push({ channel: 'openai_web_search', outcome: discovery.status });
     return result;
   }
@@ -64,7 +65,9 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
   const pages = new Map<string, PageResult>();
   const extractedPages = new Set<string>();
   result.discovered_sources = [];
-  const ordered = discovery.candidates.map((candidate, index) => ({ candidate, index }))
+  // Invalid model text is never mined for candidates; only tool-attributed URLs survive.
+  const candidates = discovery.status === 'invalid_response' ? [...new Set(discovery.sources.map(source => firstPartyUrl(source.url, domain)).filter((url): url is string => !!url))].sort((a, b) => sourcePriority(b).priority - sourcePriority(a).priority).slice(0, 20).map(source_url => ({ source_url, evidence_text: '' })) : discovery.candidates;
+  const ordered = candidates.map((candidate, index) => ({ candidate, index }))
     .sort((a, b) => sourcePriority(b.candidate.source_url ?? '').priority - sourcePriority(a.candidate.source_url ?? '').priority);
   for (const { candidate, index } of ordered) {
     const url = firstPartyUrl(candidate.source_url, domain);
@@ -88,33 +91,54 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
     const embedded = page.ok && page.content_type === 'text/html'
       ? inspectEmbeddedEvidence(page.content, finalUrl!) : { candidates: [], named_evidence: [], incomplete: false };
     const pageCandidates = page.ok ? [...extractCompanyCandidates(page.content, finalUrl!, page.content_type), ...embedded.candidates] : [];
-    // A retrieved document supersedes snippets. Sparse shells allow fallback only
-    // when no deterministic identifiers were recoverable from visible/embedded data.
-    const useDocument = page.ok && (outcome === 'success' || pageCandidates.length > 0);
-    const origin = useDocument ? 'discovered_url_direct' as const : 'search_evidence_fallback' as const;
-    if (!result.discovered_sources.some(source => source.url === url)) result.discovered_sources.push({ url, outcome, evidence_origin: origin, diagnostics: page.diagnostics ?? null });
-    if (useDocument && page.ok) {
-      if (extractedPages.has(url)) continue;
+    const pageNamed = page.ok ? [...extractNamedEvidence(page.content, finalUrl!, page.content_type), ...embedded.named_evidence] : [];
+    const inScope = (o: CandidateOccurrence) => o.block.authority === 'primary'
+      && !sourcePriority(o.source_url, o.block.heading_context).exclusion
+      && !occurrenceMarketMismatch(o, input.target_market ?? 'GB')
+      && !evidenceContextMismatch(o.block.text, input.brand_name);
+    const pageFused = fuseDocumentEvidence(mergeCandidates(pageCandidates), pageNamed, input);
+    const complete = pageFused.some(item => item.occurrences.some(o => inScope(o) && isShoppingRole(o.role) && o.possible_legal_name));
+    // Retain the complete document even when fallback must fill missing facts.
+    if (page.ok && !extractedPages.has(url)) {
       extractedPages.add(url);
-      const pageNamed = [...extractNamedEvidence(page.content, finalUrl!, page.content_type), ...embedded.named_evidence];
-      for (const occurrence of [...pageCandidates.flatMap(item => item.occurrences), ...pageNamed]) {
-        occurrence.evidence_origin = origin; occurrence.discovered_url = url;
+      for (const o of [...pageCandidates.flatMap(item => item.occurrences), ...pageNamed]) {
+        o.evidence_origin = 'discovered_url_direct'; o.discovered_url = url;
       }
       found.push(...pageCandidates);
       result.named_role_evidence.push(...pageNamed);
-      // No model-text fallback after an ordinary successful full-page retrieval.
-      continue;
     }
+    const onlyExcludedContext = pageNamed.length > 0 && pageNamed.every(o => !!sourcePriority(o.source_url, o.block.heading_context).exclusion);
+    const fallbackAllowed = !onlyExcludedContext && !complete && (!page.ok || finalUrl === url) && discovery.status === 'success';
+    const origin = fallbackAllowed ? page.ok ? 'search_evidence_fallback_after_direct_no_usable_evidence' as const : 'search_evidence_fallback' as const : 'discovered_url_direct' as const;
+    if (!result.discovered_sources.some(source => source.url === url)) result.discovered_sources.push({ url, outcome, evidence_origin: origin, diagnostics: page.diagnostics ?? null });
+    if (!fallbackAllowed || !candidate.evidence_text.trim()) continue;
     if (evidenceContextMismatch(candidate.evidence_text, input.brand_name)) {
       result.discovery_rejections.push({ index, reason: 'context_mismatch' }); continue;
     }
-    if (marketContextMismatch(candidate.evidence_text, candidate.source_url!, input.target_market ?? 'GB')) {
+    if (marketContextMismatch('', candidate.source_url!, input.target_market ?? 'GB')) {
       result.discovery_rejections.push({ index, reason: 'market_context_mismatch' }); continue;
     }
     // Treat quote/claim text as untrusted plain text. Never turn model-supplied
     // name/number/role fields into a synthetic sentence or a verified relationship.
     const extracted = extractCompanyCandidates(candidate.evidence_text, candidate.source_url!, 'text/plain');
     const named = extractNamedEvidence(candidate.evidence_text, candidate.source_url!, 'text/plain');
+    const fallbackOccurrences = [...extracted.flatMap(item => item.occurrences), ...named];
+    if (fallbackOccurrences.length && fallbackOccurrences.every(o => occurrenceMarketMismatch(o, input.target_market ?? 'GB'))) {
+      result.discovery_rejections.push({ index, reason: 'market_context_mismatch' });
+    }
+    // A fallback can fill omissions, never erase a direct identity or role conflict.
+    const directEvidence = [...pageCandidates.flatMap(item => item.occurrences), ...pageNamed].filter(inScope);
+    for (const o of fallbackOccurrences) {
+      const conflict = directEvidence.some(d => {
+        const sameName = !!d.possible_legal_name && !!o.possible_legal_name && normaliseLegalName(d.possible_legal_name) === normaliseLegalName(o.possible_legal_name);
+        const sameNumber = !!d.canonical_identifier && d.canonical_identifier === o.canonical_identifier;
+        if (sameNumber && d.possible_legal_name && o.possible_legal_name && !sameName) return true;
+        if (sameName && d.canonical_identifier && o.canonical_identifier && d.canonical_identifier !== o.canonical_identifier) return true;
+        if (d.possible_legal_name && o.possible_legal_name && !sameName && isShoppingRole(d.role) && isShoppingRole(o.role)) return true;
+        return (sameName || sameNumber) && /(?:not|no longer)\s+(?:the\s+)?(?:seller|site operator)|(?:does not|no longer)\s+operate/i.test(d.block.text) && isShoppingRole(o.role);
+      });
+      if (conflict) o.direct_evidence_conflict = true;
+    }
     for (const occurrence of named) { occurrence.evidence_origin = origin; occurrence.discovered_url = url; occurrence.retrieval_channel = 'openai_web_search'; occurrence.extraction_channel = 'discovery_text'; }
     result.named_role_evidence.push(...named);
     if (!extracted.length) {
@@ -136,7 +160,7 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
     }
     found.push(...extracted);
   }
-  result.attempts.push({ channel: 'openai_web_search', outcome: found.length ? 'evidence_found' : 'no_usable_evidence' });
+  result.attempts.push({ channel: 'openai_web_search', outcome: discovery.status === 'invalid_response' ? 'invalid_response' : found.length ? 'evidence_found' : 'no_usable_evidence' });
   // Preserve relevant conflicts across pages/channels instead of selecting the best-looking result.
   const prior: ExtractedCandidate[] = direct.flatMap(proposal => proposal.company_number ? [{ company_number: proposal.company_number,
     source_url: proposal.source_url, occurrences: proposal.evidence_groups.flatMap(group => group.occurrences) }] : []);
@@ -148,5 +172,7 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
     if (proposal.recommended_action === 'UNRESOLVED') proposal.recommended_action = 'REVIEW';
   }
   result.proposals = [...verified, ...unverified];
-  return { ...result, ...selectCandidate(result.proposals) };
+  const selection = selectCandidate(result.proposals);
+  if (discovery.status === 'invalid_response' && selection.overall.recommended_action === 'PROPOSE') discovery.recovered_by = 'deterministic_source_retrieval';
+  return { ...result, ...selection };
 }

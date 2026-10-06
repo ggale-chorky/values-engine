@@ -1,3 +1,4 @@
+import { legalNamePattern } from './legal-name.js';
 import { explicitlyUkRegistration } from './evidence-market.js';
 import { parseDocument } from 'htmlparser2';
 import { normalizeCompanyNumber } from '../importers/gender-pay-gap.js';
@@ -14,7 +15,7 @@ export interface TextBlock {
   authority: 'primary' | 'secondary';
 }
 export interface CandidateOccurrence {
-  evidence_origin?: 'discovered_url_direct' | 'search_evidence_fallback';
+  evidence_origin?: 'discovered_url_direct' | 'search_evidence_fallback' | 'search_evidence_fallback_after_direct_no_usable_evidence';
   discovered_url?: string;
   source_priority?: number;
   source_exclusion?: string;
@@ -25,6 +26,7 @@ export interface CandidateOccurrence {
   canonical_identifier: string | null;
   same_document_evidence_fusion?: { canonical_source_url: string; matched_legal_name: string; canonical_identifier: string };
   fusion_conflict?: boolean;
+  direct_evidence_conflict?: boolean;
   source_url: string;
   extraction_channel: ExtractionChannel;
   retrieval_channel: RetrievalChannel;
@@ -118,6 +120,8 @@ export function pageText(content: string, type: 'text/html' | 'text/plain' = 'te
 }
 
 export function classifyRole(beforeName: string, afterName: string, block: TextBlock): { role: CandidateRole; role_basis: CandidateOccurrence['role_basis'] } {
+  // Clause numbering and quotation marks are presentation, not relationship objects.
+  beforeName = beforeName.replace(/[“”‘’"]/g, '').replace(/(?:^|[.!?;:]\s*)\d+(?:\.\d+)*\.?\s+/g, ' ');
   // Ellipsis in extracted snippets is a gap marker, not a new grammatical subject.
   afterName = afterName.replace(/\.{2,}|…/g, ' ');
   if (/\b(former|previous|formerly|no longer|not)\b/i.test(beforeName + afterName)) return { role: 'unknown', role_basis: 'unknown' };
@@ -135,7 +139,7 @@ export function classifyRole(beforeName: string, afterName: string, block: TextB
   }
   const patterns: [CandidateRole, RegExp][] = [
     ['seller', /(?:seller\s+(?:is|:)|(?:products|goods)(?:\s+supplied\s+from\s+(?:the|this)\s+(?:website|site|webshop|store))?\s+are\s+(?:sold|supplied)\s+by)\s*$/i],
-    ['site_operator', /(?:(?:^|[.!?;:]\s*)(?:(?:the|this|our)\s+)?(?:website|site|webshop|store)\s+(?:(?:is|are)\s+)?(?:owned\s+and\s+)?operated\s+by|site operator\s+(?:is|:))\s*$/i],
+    ['site_operator', /(?:(?:^\s*|[.!?;:]\s*|\b(?:that|confirm that)\s+)(?:(?:the|this|our)\s+)?(?:website|site|webshop|store|www\.[a-z0-9.-]+\.[a-z]{2,})\s+(?:(?:is|are)\s+)?(?:owned\s+and\s+)?operated\s+by|site operator\s+(?:is|:))\s*$/i],
     ['brand_operator', /(?:brand\s+is\s+operated\s+by|brand operator\s+(?:is|:))\s*$/i],
     ['promoter', /(?:promoter\s+(?:is|:)|(?:programme|program)\s+is\s+offered\s+(?:at the sole discretion of|by))\s*$/i],
     ['licensor', /licensor\s+(?:is|:)\s*$/i],
@@ -168,7 +172,7 @@ export function classifyRole(beforeName: string, afterName: string, block: TextB
   return { role: 'unknown', role_basis: 'unknown' };
 }
 
-function legalNamePattern(): RegExp { return /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu; }
+
 const stripNamePreamble = (value: string) => value.replace(/^(?:(?:THE )?(?:SELLER|SITE OPERATOR|BRAND OPERATOR|PROMOTER|LICENSOR|DATA CONTROLLER) IS|WE ARE|COPYRIGHT)\s+/i, '');
 
 /** Retain named role statements even when the identifier lives elsewhere in the document. */

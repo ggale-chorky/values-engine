@@ -3,7 +3,7 @@ import { firstPartyUrl } from './discover-first-party-evidence.js';
 import { evidenceContextMismatch, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, ExtractedCandidate } from './extract-company-candidates.js';
 import { normaliseLegalName } from './legal-name.js';
-import { marketContextMismatch } from './evidence-market.js';
+import { occurrenceMarketMismatch } from './evidence-market.js';
 import type { TargetMarket } from './evidence-market.js';
 
 /** Matching uses the complete canonical URL (including path/query), never just its domain. */
@@ -15,7 +15,7 @@ export function fuseDocumentEvidence(candidates: ExtractedCandidate[], namedEvid
   const inScope = (occurrence: CandidateOccurrence) => document(occurrence) !== null && occurrence.block.authority === 'primary'
     && !sourcePriority(occurrence.source_url, occurrence.block.heading_context).exclusion
     && !evidenceContextMismatch([occurrence.block.text, ...occurrence.block.heading_context].join('\n'), context.brand_name)
-    && !marketContextMismatch([occurrence.block.text, ...occurrence.block.heading_context].join('\n'), occurrence.source_url, context.target_market ?? 'GB');
+    && !occurrenceMarketMismatch(occurrence, context.target_market ?? 'GB');
   const output = candidates.map(candidate => ({ ...candidate, occurrences: candidate.occurrences.map(occurrence => ({ ...occurrence })) }));
   const identifiers = output.flatMap(candidate => candidate.occurrences).filter(occurrence => occurrence.canonical_identifier && occurrence.possible_legal_name && inScope(occurrence));
   for (const role of namedEvidence) {

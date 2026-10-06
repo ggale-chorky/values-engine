@@ -21,6 +21,7 @@ export interface DiscoveryError {
   retryable: boolean;
 }
 export interface DiscoveryResult {
+  recovered_by?: 'deterministic_source_retrieval';
   validation_errors?: { kind: 'malformed_json' | 'missing_fields' | 'schema_mismatch' | 'other_validation'; attempt: number; fields: string[] }[];
   error?: DiscoveryError;
   attempts?: number;

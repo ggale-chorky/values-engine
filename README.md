@@ -628,14 +628,15 @@ fusion rules remain in force; registry/page-name disagreement requires REVIEW.
 Domain-restricted discovery prioritises authoritative legal URLs. Each attributable
 candidate URL is retrieved sequentially with the existing bounded, public-address-only
 HTTP client. Duplicate URLs are fetched once per discovery pass. The full visible and
-embedded document is extracted deterministically without executing scripts. Ordinary
-successful documents supersede model snippets, including documents with no company
-evidence. Blocked/unavailable or insufficient documents may use attributable search
+embedded document is extracted deterministically without executing scripts. Complete deterministic documents supersede model snippets. V2.4.1 allows same-URL
+search fallback when direct extraction lacks usable identifiers or shopping-role evidence;
+HTTP success alone does not suppress fallback. Direct contradictions still block approval. Blocked/unavailable or insufficient documents may use attributable search
 text as fallback; an embedded identifier recovered from a sparse shell still uses
 that document. Off-domain redirects are rejected. No access-control bypass is added.
 
 Occurrence provenance records `evidence_origin` as `discovered_url_direct` or
-`search_evidence_fallback`, plus the discovered URL and existing retrieval/extraction
+`search_evidence_fallback` (or, since V2.4.1,
+`search_evidence_fallback_after_direct_no_usable_evidence`), plus the discovered URL and existing retrieval/extraction
 channels. `discovered_sources` records retrieval outcome and safe diagnostics; raw
 search candidates and the complete API source list remain available for audit.
 Model-provided name/number/role fields never substitute for deterministic extraction
@@ -657,5 +658,45 @@ to benchmark ERROR unless an independent PROPOSE already exists. There is at mos
 one transient provider retry across the operation, so repair plus retry is bounded
 to three API requests. No ownership truth or graph relationships are written.
 
-The implementation is locally tested with mocked transports. Stop before the live
-Beauty UK v1 regression comparison; its V2.4 distribution is not yet measured.
+Implementation tests use mocked transports. Beauty UK v1 remains a regression
+comparison; it cannot supply a new blind performance estimate.
+
+
+### Resolver V2.4.1 correctness patch
+
+A discovered document is complete for fallback selection only when deterministic
+extraction/fusion supplies an in-scope named company identifier and a relevant
+shopping role. Otherwise attributable search text for the same canonical URL may
+fill missing facts. Direct facts remain in the evidence groups. Identity conflicts,
+different explicit operators and explicit denials block PROPOSE. A successful redirect
+to a different document cannot borrow the original URL's snippet; excluded applicant
+or other non-shopping document contexts cannot be laundered through fallback.
+All existing Companies House, name, role, market and conflict gates still apply.
+
+Shared role parsing accepts numbered clauses, curly quotation marks, website-domain
+subjects and surrounding “that” clauses. It does not turn a service operator or
+identity statement into a site operator. Market checks bound registration clauses
+to each named legal-entity occurrence, including adjacent LLC entities. Ambiguous
+or repeated name boundaries retain conservative whole-block checks; foreign URL
+scope and heading context still apply.
+
+Source ordering prioritises main/root legal terms, explicitly GB-scoped legal pages
+(including `/en_GB/`), then root privacy/legal material. Foreign subdomains remain
+secondary and ineligible for GB selection. These are generic heuristics, with no
+brand-specific mappings.
+
+After the one bounded repair, invalid structured discovery can still supply
+allowed-domain tool-attributed source URLs. Up to 20 distinct URLs are ranked,
+retrieved and parsed deterministically. Malformed model text supplies no facts.
+Validation diagnostics remain intact. A resulting PROPOSE records
+`recovered_by: deterministic_source_retrieval` and avoids a fatal benchmark ERROR;
+otherwise `discovery_invalid_response` remains an operational ERROR.
+
+When multiple candidates lack shopping roles, REVIEW presentation prefers a uniquely
+stronger transactional/legal source rather than the strongest registry match. Tied
+or privacy-only alternatives produce `ambiguous_legal_entity` with no selected entity.
+This affects REVIEW display only; competing verified shopping entities remain REVIEW.
+
+The harness records `resolver_version: V2.4.1` and keeps Beauty UK v1 labelled
+`regression_comparison`. Existing run directories, the frozen dataset/manifest and
+migrations are preserved. No live V2.4.1 regression measurement is claimed here.

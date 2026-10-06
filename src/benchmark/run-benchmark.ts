@@ -17,7 +17,7 @@ export interface RunMetadata {
   git_dirty: boolean;
   timestamp: string;
   resolver_target_market: 'GB';
-  resolver_version: 'V2.3' | 'V2.4';
+  resolver_version: 'V2.3' | 'V2.4' | 'V2.4.1';
   evaluation_kind?: 'regression_comparison' | 'unclassified';
   resolver_source_sha256: Record<string, string>;
   openai_configuration: { model: string | null; identifier: string; allowed_domains: string; tool_choice: string | null; include_sources: boolean };

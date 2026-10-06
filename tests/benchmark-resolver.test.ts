@@ -51,9 +51,9 @@ describe('blind benchmark inputs and frozen snapshot', () => {
     expect(createHash('sha256').update(csv).digest('hex')).toBe(manifest.benchmark_input_sha256);
     for (const [path, digest] of Object.entries(manifest.files)) expect(createHash('sha256').update(execFileSync('git', ['show', `043dcac7e7bc6db4db345faa98c2c76b10c02f74:${path}`])).digest('hex')).toBe(digest);
   });
-  it('labels reuse of Beauty UK v1 as a V2.4 regression comparison', async () => {
+  it('labels reuse of Beauty UK v1 as a V2.4.1 regression comparison', async () => {
     const file = 'benchmarks/beauty-uk-v1.csv';
-    expect(await benchmarkMetadata(file, await readFile(file, 'utf8'))).toMatchObject({ resolver_version: 'V2.4', evaluation_kind: 'regression_comparison' });
+    expect(await benchmarkMetadata(file, await readFile(file, 'utf8'))).toMatchObject({ resolver_version: 'V2.4.1', evaluation_kind: 'regression_comparison' });
   });
   it('domain adapter derives only the homepage and invokes frozen discovery', async () => {
     const fetchPage = vi.fn(async (url: string) => ({ ok: false as const, status: 'source_unavailable' as const, source_url: url, reason: 'blocked' as const, http_status: 403 }));

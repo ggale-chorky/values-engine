@@ -101,11 +101,11 @@ describe('V2.4 URL-first discovery and retained secondary sources', () => {
     expect(result.selected_candidate?.evidence_groups[0]?.occurrences[0]?.evidence_origin).toBe('search_evidence_fallback');
     expect(result.discovered_sources?.[0]).toMatchObject({ outcome: 'blocked', evidence_origin: 'search_evidence_fallback' });
   });
-  it('ordinary successful document with no evidence does not fall back to a contradictory snippet', async () => {
+  it('successful document with no evidence permits same-URL fallback in V2.4.1', async () => {
     const result = await resolveWithDiscovery(input, { fetchPage: blocked, fetchDiscoveredPage: async () => page('<p>' + 'General information. '.repeat(15) + '</p>'),
       companiesHouse: registry(), discover: async () => discovery([claim(site)]) });
-    expect(result.overall.recommended_action).toBe('UNRESOLVED');
-    expect(result.discovered_sources?.[0]?.evidence_origin).toBe('discovered_url_direct');
+    expect(result.overall.recommended_action).toBe('PROPOSE');
+    expect(result.discovered_sources?.[0]?.evidence_origin).toBe('search_evidence_fallback_after_direct_no_usable_evidence');
   });
   it('deduplicates retrieval while retaining multiple blocked-source snippets for fusion', async () => {
     const fetchDiscoveredPage = vi.fn(blocked);

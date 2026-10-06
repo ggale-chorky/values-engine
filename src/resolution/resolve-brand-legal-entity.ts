@@ -2,7 +2,7 @@ import { annotateSource } from './source-priority.js';
 import { fuseDocumentEvidence } from './fuse-document-evidence.js';
 import { normaliseLegalName } from './legal-name.js';
 export { normaliseLegalName } from './legal-name.js';
-import { marketContextMismatch } from './evidence-market.js';
+import { occurrenceMarketMismatch } from './evidence-market.js';
 import type { TargetMarket } from './evidence-market.js';
 import { firstPartyUrl } from './discover-first-party-evidence.js';
 import { CompaniesHouseError } from './companies-house.js';
@@ -112,7 +112,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     annotateSource(occurrence);
     const context = [occurrence.block.text, ...occurrence.block.heading_context].join('\n');
     occurrence.context_mismatch = evidenceContextMismatch(context, brand);
-    occurrence.market_context_mismatch = marketContextMismatch(context, occurrence.source_url, targetMarket);
+    occurrence.market_context_mismatch = occurrenceMarketMismatch(occurrence, targetMarket);
     try {
       const domain = input.domain ?? new URL(input.source_url ?? occurrence.source_url).hostname;
       occurrence.source_validated = !!firstPartyUrl(occurrence.source_url, domain);
@@ -175,7 +175,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
       identifier_extracted_deterministically: candidate.occurrences.some(occurrence => occurrence.canonical_identifier === candidate.company_number),
       registry_verified: !!profile, registry_active: profile?.company_status === 'active', legal_name_verified: false,
       role_relevant: selected.length > 0, market_context_match: candidate.occurrences.some(occurrence => !occurrence.market_context_mismatch),
-      brand_context_match: candidate.occurrences.some(occurrence => !occurrence.context_mismatch), blocking_conflict: candidate.occurrences.some(occurrence => occurrence.fusion_conflict) };
+      brand_context_match: candidate.occurrences.some(occurrence => !occurrence.context_mismatch), blocking_conflict: candidate.occurrences.some(occurrence => occurrence.fusion_conflict || occurrence.direct_evidence_conflict) };
     base.same_document_evidence_fusion = considered.some(occurrence => !!occurrence.same_document_evidence_fusion);
     if (base.same_document_evidence_fusion) base.signals.push({ code: 'same_document_evidence_fusion', weight: 0, detail: candidate.company_number });
     if (!profile) {
@@ -219,7 +219,9 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
       weight: 0, detail: candidate.occurrences.length - considered.length });
     base.verification.legal_name_verified = nameAgreement;
     const fusionConflict = candidate.occurrences.some(occurrence => occurrence.fusion_conflict);
-    base.verification.blocking_conflict = nameConflict || ambiguous || fusionConflict;
+    const directConflict = candidate.occurrences.some(occurrence => occurrence.direct_evidence_conflict);
+    base.verification.blocking_conflict = nameConflict || ambiguous || fusionConflict || directConflict;
+    if (candidate.occurrences.some(o => o.direct_evidence_conflict)) signals.push({ code: 'direct_evidence_conflict', weight: 0, detail: 'Fallback contradicts direct document evidence' });
     if (fusionConflict) signals.push({ code: 'same_document_fusion_conflict', weight: 0, detail: candidate.company_number });
     const score = Math.round(Math.max(0, Math.min(1, signals.reduce((sum, signal) => sum + signal.weight, 0))) * 100) / 100;
     base.confidence = { score, level: score >= 0.9 ? 'HIGH' : score >= 0.6 ? 'MEDIUM' : 'LOW', calibrated: false };
@@ -228,7 +230,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
       && state.registry_active && state.legal_name_verified && state.role_relevant && state.market_context_match
       && state.brand_context_match && !state.blocking_conflict ? 'PROPOSE' : 'REVIEW';
     base.reason = base.recommended_action === 'PROPOSE' ? 'verified_operating_entity'
-      : ambiguous ? 'ambiguous_legal_entity' : contextMismatch ? 'context_mismatch' : nameConflict || fusionConflict ? 'conflicting_company_evidence'
+      : ambiguous ? 'ambiguous_legal_entity' : contextMismatch ? 'context_mismatch' : nameConflict || fusionConflict || directConflict ? 'conflicting_company_evidence'
       : !roleResolved ? 'relationship_role_inadequate'
       : !active ? 'company_inactive' : 'legal_name_unavailable';
     return base;

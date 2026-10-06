@@ -1,3 +1,4 @@
+import { sourcePriority } from './source-priority.js';
 import type { Proposal } from './resolve-brand-legal-entity.js';
 
 export interface OverallSelection {
@@ -18,6 +19,22 @@ export function selectCandidate(proposals: Proposal[]): OverallSelection {
     overall: { recommended_action: 'REVIEW', reason: 'ambiguous_legal_entity', company_number: null }, selected_candidate: null,
     supporting_candidates: relevant, secondary_candidates: proposals.filter(proposal => !relevant.includes(proposal)),
   };
+  // REVIEW presentation must not turn a registry-matched privacy affiliate into
+  // an implied operator. Source context, not registry strength, breaks this tie.
+  if (credible.length > 1 && !credible.some(p => p.verification.role_relevant)) {
+    const score = (proposal: Proposal) => Math.max(-1, ...proposal.evidence_groups.flatMap(group => group.occurrences).map(o => {
+      const source = sourcePriority(o.source_url, o.block.heading_context);
+      if (source.exclusion) return -1;
+      const context = `${new URL(o.source_url).pathname} ${o.block.heading_context.join(' ')}`;
+      return source.exclusion || /privacy|cookie/i.test(context) || !/terms|conditions|legal[- /]notice/i.test(context) ? -1 : source.priority;
+    }));
+    const ordered = [...credible].sort((a, b) => score(b) - score(a));
+    const best = ordered[0]!;
+    const selected = score(best) >= 0 && score(best) > score(ordered[1]!) ? best : null;
+    return { overall: { recommended_action: 'REVIEW', reason: selected?.reason ?? 'ambiguous_legal_entity', company_number: selected?.company_number ?? null },
+      selected_candidate: selected, supporting_candidates: selected ? [selected] : credible,
+      secondary_candidates: proposals.filter(p => selected ? p !== selected : !credible.includes(p)) };
+  }
   const rank = (proposal: Proposal) => proposal.recommended_action === 'PROPOSE' ? 0
     : proposal.verification.registry_verified && proposal.verification.legal_name_verified ? 1 : 2;
   // Stable identity ordering is for diagnostics only; no competing verified operators are selected by it.
