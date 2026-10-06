@@ -2,8 +2,12 @@ import { CompaniesHouseError } from './companies-house.js';
 import type { CompaniesHouseLookup, CompanyProfile } from './companies-house.js';
 import { extractCompanyCandidates, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, CandidateRole, ExtractedCandidate } from './extract-company-candidates.js';
-import { fetchFirstPartyPage } from './fetch-first-party-page.js';
-import type { PageResult } from './fetch-first-party-page.js';
+import { contentDiagnostics, fetchFirstPartyPage } from './fetch-first-party-page.js';
+import type { PageResult, RetrievalDiagnostics } from './fetch-first-party-page.js';
+
+export type ResolutionReason = 'source_blocked' | 'source_unavailable' | 'insufficient_visible_text' | 'no_company_evidence'
+  | 'relationship_role_inadequate' | 'company_verification_failed' | 'conflicting_company_evidence'
+  | 'incomplete_verification' | 'company_inactive' | 'legal_name_unavailable' | 'verified_operating_entity';
 
 export interface Signal { code: string; weight: number; detail: string | number | boolean | null }
 export interface EvidenceGroup {
@@ -15,6 +19,8 @@ export interface EvidenceGroup {
   occurrences: CandidateOccurrence[];
 }
 export interface Proposal {
+  reason: ResolutionReason;
+  retrieval_diagnostics: RetrievalDiagnostics | null;
   brand_name: string;
   candidate_legal_entity_name: string | null;
   company_number: string | null;
@@ -39,7 +45,8 @@ export function normaliseLegalName(value: string): string {
 }
 
 function unresolved(brand: string, source: string, code: string, detail: Signal['detail'] = null): Proposal {
-  return { brand_name: brand, candidate_legal_entity_name: null, company_number: null, company_status: null,
+  return { reason: 'source_unavailable', retrieval_diagnostics: null,
+    brand_name: brand, candidate_legal_entity_name: null, company_number: null, company_status: null,
     source_url: source, source_snippet: null, extracted_names: [], inferred_role: 'unknown', companies_house_match: null,
     evidence_groups: [], conflicting_evidence: [], signals: [{ code, weight: 0, detail }],
     confidence: { score: 0, level: 'LOW', calibrated: false }, recommended_action: 'UNRESOLVED' };
@@ -51,9 +58,20 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
 }): Promise<Proposal[]> {
   const { brand_name: brand, source_url: source } = input;
   const page = await (dependencies.fetchPage ?? fetchFirstPartyPage)(source);
-  if (!page.ok) return [unresolved(brand, source, 'source_unavailable', page.reason)];
+  if (!page.ok) {
+    const result = unresolved(brand, source, 'source_unavailable', page.reason);
+    result.reason = page.reason === 'blocked' ? 'source_blocked' : 'source_unavailable';
+    result.retrieval_diagnostics = page.diagnostics ?? null;
+    return [result];
+  }
   const all = extractCompanyCandidates(page.content, page.final_url, page.content_type);
-  if (!all.length) return [unresolved(brand, page.final_url, 'no_company_number')];
+  if (!all.length) {
+    const result = unresolved(brand, page.final_url, 'no_company_number');
+    result.reason = (page.diagnostics ?? contentDiagnostics(page.content, page.content_type)).outcome === 'empty_or_shell'
+      ? 'insufficient_visible_text' : 'no_company_evidence';
+    result.retrieval_diagnostics = page.diagnostics ?? null;
+    return [result];
+  }
   // Explicit bound on API calls per page. Never search for a brand as a fallback.
   const candidates = all.slice(0, 10);
   const checked: { candidate: ExtractedCandidate; profile: CompanyProfile | null; failure: string | null }[] = [];
@@ -76,6 +94,7 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
   const operators = all.filter(candidate => relevant(candidate).length > 0);
   return checked.map(({ candidate, profile, failure }) => {
     const base = unresolved(brand, candidate.source_url, 'labelled_company_number', candidate.company_number);
+    base.retrieval_diagnostics = page.diagnostics ?? null;
     base.company_number = candidate.company_number;
     const selected = relevant(candidate);
     const considered = selected.length ? selected : candidate.occurrences.filter(occurrence => occurrence.block.authority === 'primary');
@@ -95,6 +114,7 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
       group.occurrences.push(occurrence);
     }
     if (!profile) {
+      base.reason = 'company_verification_failed';
       base.signals.push({ code: `companies_house_${failure}`, weight: 0, detail: null });
       return base;
     }
@@ -133,6 +153,10 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
     const score = Math.round(Math.max(0, Math.min(1, signals.reduce((sum, signal) => sum + signal.weight, 0))) * 100) / 100;
     base.confidence = { score, level: score >= 0.9 ? 'HIGH' : score >= 0.6 ? 'MEDIUM' : 'LOW', calibrated: false };
     base.recommended_action = nameAgreement && active && roleResolved && !ambiguous && !incomplete ? 'PROPOSE' : 'REVIEW';
+    base.reason = base.recommended_action === 'PROPOSE' ? 'verified_operating_entity'
+      : nameConflict || ambiguous ? 'conflicting_company_evidence'
+      : !roleResolved ? 'relationship_role_inadequate'
+      : incomplete ? 'incomplete_verification' : !active ? 'company_inactive' : 'legal_name_unavailable';
     return base;
   });
 }

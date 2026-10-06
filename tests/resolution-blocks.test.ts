@@ -59,7 +59,7 @@ describe('block and role regression coverage', () => {
     const html = await readFile(new URL('./fixtures/resolution/estee-lauder.html', import.meta.url), 'utf8');
     const [proposal] = await run(html, 'ESTEE LAUDER COSMETICS LIMITED');
     expect(proposal).toMatchObject({ company_number: '00659213', candidate_legal_entity_name: 'ESTEE LAUDER COSMETICS LIMITED',
-      inferred_role: 'promoter', recommended_action: 'REVIEW' });
+      inferred_role: 'promoter', recommended_action: 'REVIEW', reason: 'relationship_role_inadequate' });
     expect(proposal?.signals.map(signal => signal.code)).toContain('legal_name_agreement');
     expect(proposal?.signals.map(signal => signal.code)).toContain('shopping_role_unresolved');
   });

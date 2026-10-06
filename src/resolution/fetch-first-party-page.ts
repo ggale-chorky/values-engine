@@ -3,6 +3,42 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import { RESOLVER_USER_AGENT } from './companies-house.js';
+import { parseDocument } from 'htmlparser2';
+import { extractCompanyCandidates, pageText } from './extract-company-candidates.js';
+
+export type FetchOutcome = 'success' | 'blocked' | 'empty_or_shell' | 'unsupported_content' | 'network_error' | 'http_error';
+export interface RetrievalDiagnostics {
+  requested_url: string;
+  final_url: string | null;
+  http_status: number | null;
+  content_type: string | null;
+  response_byte_count: number;
+  visible_text_character_count: number | null;
+  html_title: string | null;
+  contains_company_number_pattern: boolean | null;
+  outcome: FetchOutcome;
+}
+// Query values, fragments and URL credentials do not belong in diagnostics.
+function safeUrl(value: string): string {
+  try { const url = new URL(value); return `${url.protocol}//${url.host}${url.pathname}`; }
+  catch { return '[invalid URL]'; }
+}
+export function contentDiagnostics(content: string, type: 'text/html' | 'text/plain') {
+  const visible = pageText(content, type);
+  let title: string | null = null;
+  if (type === 'text/html') {
+    type Node = ReturnType<typeof parseDocument>['children'][number];
+    const text = (nodes: Node[]): string => nodes.map(node => node.type === 'text' ? node.data : 'children' in node ? text(node.children) : '').join('');
+    const visit = (nodes: Node[]) => { for (const node of nodes) if ('name' in node && 'children' in node) {
+      if (node.name === 'title' && title === null) title = text(node.children).replace(/\s+/g, ' ').trim().slice(0, 200);
+      else visit(node.children);
+    } };
+    visit(parseDocument(content).children);
+  }
+  const contains = extractCompanyCandidates(content, '', type).length > 0;
+  return { visible_text_character_count: visible.length, html_title: title, contains_company_number_pattern: contains,
+    outcome: !contains && visible.length < 100 ? 'empty_or_shell' as const : 'success' as const };
+}
 
 const MAX_BYTES = 2_000_000;
 const TIMEOUT_MS = 15_000;
@@ -26,10 +62,10 @@ export function isPublicAddress(address: string): boolean {
 
 type FailureReason = 'invalid_url' | 'non_public_address' | 'timeout' | 'network_error' | 'http_error'
   | 'blocked' | 'too_many_redirects' | 'cross_site_redirect' | 'unsupported_content_type' | 'response_too_large' | 'unsupported_encoding';
-class PageError extends Error { constructor(public readonly reason: FailureReason) { super(reason); } }
-export type PageResult = { ok: true; source_url: string; final_url: string; content_type: 'text/html' | 'text/plain'; content: string }
-  | { ok: false; status: 'source_unavailable'; source_url: string; reason: FailureReason; http_status: number | null };
-export interface PageResponse { status: number; headers: Record<string, string | undefined>; body: string }
+class PageError extends Error { constructor(public readonly reason: FailureReason, public readonly response?: PageResponse) { super(reason); } }
+export type PageResult = ({ ok: true; source_url: string; final_url: string; content_type: 'text/html' | 'text/plain'; content: string }
+  | { ok: false; status: 'source_unavailable'; source_url: string; reason: FailureReason; http_status: number | null }) & { diagnostics?: RetrievalDiagnostics };
+export interface PageResponse { status: number; headers: Record<string, string | undefined>; body: string; byte_count?: number }
 
 function publicUrl(input: string): URL {
   let url;
@@ -63,20 +99,21 @@ export async function requestPublicPage(url: URL, signal: AbortSignal): Promise<
       const status = response.statusCode ?? 0;
       if (status !== 200) { response.destroy(); resolve({ status, headers, body: '' }); return; }
       const type = headers['content-type']?.split(';')[0]?.trim().toLowerCase();
-      if (type !== 'text/html' && type !== 'text/plain') { response.destroy(); reject(new PageError('unsupported_content_type')); return; }
+      const failure = (reason: FailureReason, byte_count = 0) => new PageError(reason, { status, headers, body: '', byte_count });
+      if (type !== 'text/html' && type !== 'text/plain') { response.destroy(); reject(failure('unsupported_content_type')); return; }
       if (headers['content-encoding'] && headers['content-encoding'] !== 'identity') {
-        response.destroy(); reject(new PageError('unsupported_encoding')); return;
+        response.destroy(); reject(failure('unsupported_encoding')); return;
       }
-      if (Number(headers['content-length']) > MAX_BYTES) { response.destroy(); reject(new PageError('response_too_large')); return; }
+      if (Number(headers['content-length']) > MAX_BYTES) { response.destroy(); reject(failure('response_too_large')); return; }
       const chunks: Buffer[] = [];
       let size = 0;
       response.on('data', (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_BYTES) { response.destroy(); reject(new PageError('response_too_large')); }
+        if (size > MAX_BYTES) { response.destroy(); reject(failure('response_too_large', size)); }
         else chunks.push(chunk);
       });
-      response.on('end', () => resolve({ status, headers, body: Buffer.concat(chunks).toString('utf8') }));
-      response.on('error', () => reject(new PageError('network_error')));
+      response.on('end', () => resolve({ status, headers, body: Buffer.concat(chunks).toString('utf8'), byte_count: size }));
+      response.on('error', () => reject(failure('network_error', size)));
     });
     request.on('error', () => reject(new PageError(signal.aborted ? 'timeout' : 'network_error')));
     request.end();
@@ -87,12 +124,25 @@ export async function fetchFirstPartyPage(sourceUrl: string,
   request: (url: URL, signal: AbortSignal) => Promise<PageResponse> = requestPublicPage): Promise<PageResult> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const diagnostics: RetrievalDiagnostics = { requested_url: safeUrl(sourceUrl), final_url: null, http_status: null,
+    content_type: null, response_byte_count: 0, visible_text_character_count: null, html_title: null,
+    contains_company_number_pattern: null, outcome: 'network_error' };
+  const record = (response: PageResponse) => {
+    diagnostics.http_status = response.status;
+    diagnostics.content_type = response.headers['content-type']?.split(';')[0]?.trim().toLowerCase() ?? null;
+    diagnostics.response_byte_count = response.byte_count ?? Buffer.byteLength(response.body);
+  };
   try {
     const initial = publicUrl(sourceUrl);
     let current = initial;
     const operation = async (): Promise<PageResult> => {
       for (let redirects = 0; redirects <= 5; redirects++) {
+        diagnostics.final_url = safeUrl(current.href);
+        diagnostics.http_status = null;
+        diagnostics.content_type = null;
+        diagnostics.response_byte_count = 0;
         const response = await request(current, controller.signal);
+        record(response);
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           if (redirects === 5) throw new PageError('too_many_redirects');
           if (!response.headers.location) throw new PageError('invalid_url');
@@ -103,15 +153,15 @@ export async function fetchFirstPartyPage(sourceUrl: string,
           current = next;
           continue;
         }
-        if (response.status !== 200) return { ok: false, status: 'source_unavailable', source_url: sourceUrl,
-          reason: [401, 403, 429].includes(response.status) ? 'blocked' : 'http_error', http_status: response.status };
+        if (response.status !== 200) throw new PageError([401, 403, 429].includes(response.status) ? 'blocked' : 'http_error');
         const type = response.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
         if (type !== 'text/html' && type !== 'text/plain') throw new PageError('unsupported_content_type');
         if (Buffer.byteLength(response.body) > MAX_BYTES) throw new PageError('response_too_large');
+        Object.assign(diagnostics, contentDiagnostics(response.body, type));
         if (/(?:<title[^>]*>\s*(?:just a moment|access denied|sign in|log in)|cf-chl-|verify (?:that )?you are human|captcha challenge)/i.test(response.body)) {
           throw new PageError('blocked');
         }
-        return { ok: true, source_url: sourceUrl, final_url: current.href, content_type: type, content: response.body };
+        return { ok: true, source_url: sourceUrl, final_url: current.href, content_type: type, content: response.body, diagnostics };
       }
       throw new PageError('too_many_redirects');
     };
@@ -119,7 +169,11 @@ export async function fetchFirstPartyPage(sourceUrl: string,
       timer = setTimeout(() => { controller.abort(); reject(new PageError('timeout')); }, TIMEOUT_MS);
     })]);
   } catch (error) {
+    if (error instanceof PageError && error.response) record(error.response);
+    const reason = error instanceof PageError ? error.reason : 'network_error';
+    diagnostics.outcome = reason === 'blocked' ? 'blocked' : reason === 'http_error' ? 'http_error'
+      : ['unsupported_content_type', 'unsupported_encoding', 'response_too_large'].includes(reason) ? 'unsupported_content' : 'network_error';
     return { ok: false, status: 'source_unavailable', source_url: sourceUrl,
-      reason: error instanceof PageError ? error.reason : 'network_error', http_status: null };
+      reason, http_status: diagnostics.http_status, diagnostics };
   } finally { if (timer) clearTimeout(timer); }
 }

@@ -47,7 +47,7 @@ export function pageBlocks(content: string, type: 'text/html' | 'text/plain' = '
       const attrs = node.attribs;
       const count = (counts.get(name) ?? 0) + 1;
       counts.set(name, count);
-      if (['script', 'style', 'noscript', 'template', 'nav', 'menu'].includes(name) || 'hidden' in attrs
+      if (['head', 'title', 'script', 'style', 'noscript', 'template', 'nav', 'menu'].includes(name) || 'hidden' in attrs
         || attrs['aria-hidden'] === 'true' || ['navigation', 'menu'].includes(attrs.role ?? '')) { flush(); continue; }
       const childPath = `${path}/${name}[${count}]`;
       if (name === 'br') { text += ' '; continue; }
@@ -70,7 +70,7 @@ export function pageBlocks(content: string, type: 'text/html' | 'text/plain' = '
         const inline = (children: Node[]): string => children.map(child => {
           if (child.type === 'text') return child.data;
           if ('name' in child && 'children' in child) {
-            if (['script', 'style', 'template', 'noscript', 'nav'].includes(child.name)
+            if (['head', 'title', 'script', 'style', 'template', 'noscript', 'nav'].includes(child.name)
               || 'hidden' in child.attribs || child.attribs['aria-hidden'] === 'true') return ' ';
             return inline(child.children);
           }
@@ -101,7 +101,11 @@ function roleFor(beforeName: string, afterName: string, block: TextBlock): { rol
   // Specific brand operation takes precedence over generic "operated by".
   if (/brand\s+is\s+operated\s+by\s*$/i.test(beforeName)) return { role: 'brand_operator', role_basis: 'explicit' };
   for (const [role, pattern] of patterns) if (pattern.test(beforeName)) return { role, role_basis: 'explicit' };
-  const post = afterName.match(/^\s*(?:\([^)]*\)\s*)?(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
+  if (/we\s+are\s*$/i.test(beforeName)) return { role: 'site_operator', role_basis: 'explicit' };
+  // Parenthetical registry/address details may intervene before the predicate.
+  const predicate = afterName.replace(/\([^)]*\)/g, ' ').replace(/^\s*,?\s*registered\b[^;]*?,\s*(?=(?:is|acts as|operates)\b)/i, ' ');
+  if (/^\s*,?\s*operates\s+(?:the|this)\s+(?:web)?site\b/i.test(predicate)) return { role: 'site_operator', role_basis: 'explicit' };
+  const post = predicate.match(/^\s*,?\s*(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
   if (post) return { role: post[1]!.toLowerCase().replaceAll(' ', '_') as CandidateRole, role_basis: 'explicit' };
   // Registration identifies a company, not its role; only sale-specific section context can supply that role.
   if (block.authority === 'primary' && block.heading_context.some(heading => /terms (?:(?:and|&) conditions )?of sale|sales terms|who you (?:buy|purchase) from/i.test(heading))
@@ -133,7 +137,7 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
         const name = names.at(-1);
         const possibleName = name?.[0].replace(/^(?:(?:THE )?(?:SELLER|SITE OPERATOR|BRAND OPERATOR|PROMOTER|LICENSOR|DATA CONTROLLER) IS|WE ARE|COPYRIGHT)\s+/i, '') ?? null;
         const beforeName = name ? before.slice(0, name.index + name[0].length - possibleName!.length) : '';
-        const afterName = name ? before.slice(name.index + name[0].length) + match[0] : '';
+        const afterName = name ? sentence.slice(match.index - before.length + name.index + name[0].length) : '';
         const inferred = possibleName ? roleFor(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
         const occurrence: CandidateOccurrence = { source_snippet: sentence.trim(), possible_legal_name: possibleName,
           ...inferred, block, explicit_operator_or_seller: isShoppingRole(inferred.role) && inferred.role_basis === 'explicit' };

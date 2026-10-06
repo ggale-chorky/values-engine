@@ -344,6 +344,24 @@ programme promoter alone does not establish the shopping role. A separate generi
 synthetic fixture tests explicit seller/site-operator wording producing PROPOSE.
 No new live evidence is asserted by these fixtures.
 
+Retrieval diagnostics report requested/final URLs (without credentials, query or
+fragment), HTTP status, content type, bytes read from the final response, extracted
+visible-text length, HTML title (at most 200 characters), and whether a labelled
+company-number pattern was found. They contain no response body or headers.
+Outcomes are `success`, `blocked`, `empty_or_shell`, `unsupported_content`,
+`network_error` or `http_error`. An unread body has zero bytes read and null text
+diagnostics. Fewer than 100 extracted visible characters without a company number
+is a conservative `empty_or_shell` heuristic, not proof that JavaScript is required.
+
+Each proposal has a machine-readable `reason`: retrieval failures use
+`source_blocked` / `source_unavailable`; successfully fetched pages without evidence
+use `insufficient_visible_text` / `no_company_evidence`. A verified company whose
+role is insufficient uses `relationship_role_inadequate` and requires REVIEW.
+Other reasons distinguish verification failure, conflicting evidence, incomplete
+verification, inactive companies, unavailable legal names and verified operating
+entities. Parenthetical company registration details may precede postfix roles
+such as “is the promoter”; they still belong to the same company-number sentence.
+
 Confidence is a deterministic **uncalibrated heuristic**, with each contribution
 included in `signals`:
 
