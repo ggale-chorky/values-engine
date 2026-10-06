@@ -261,3 +261,82 @@ without duplicating matched records. Paginated reads are not a transactional
 snapshot, so avoid concurrent edits when an exactly repeatable evaluation is needed.
 No actual production values, credentials, access permissions or connectivity were
 verified in this milestone.
+
+## Resolver V1: read-only candidate proposals
+
+`npm run resolve:demo` is a live, read-only command for the three first-party URLs
+in `src/demo/catalog.ts`. It needs `COMPANIES_HOUSE_API_KEY` in the environment
+(the CLI can load local `.env`). It was **not run during implementation**. Unit
+tests use representative local HTML snippets and mocked API responses, never
+real credentials, websites or Companies House requests.
+
+The pipeline is: supplied legal-page URL → ordinary HTTP(S) fetch → visible text
+and labelled company-number extraction → direct Companies House profile lookup →
+deterministic proposal. There is no discovery crawl, browser automation, LLM,
+Supabase access, relationship creation or automatic verification-state change.
+The caller supplies the first-party URL; V1 does not independently establish
+that the domain belongs to the named brand. A proposal is not proof of ownership.
+
+`CompaniesHouseClient` uses the [official API authentication scheme](https://developer.company-information.service.gov.uk/authentication):
+HTTP Basic with the environment key as username and an empty password. It supports
+direct company profiles and company search, validates responses with Zod and
+checks that a returned profile number matches the requested number. The resolver
+only uses direct lookups; search never substitutes a guess when no number is found.
+401, 404, 429, network errors, timeouts and invalid responses have explicit error
+codes. Requests time out after 10 seconds, responses are capped at 1 MB, authenticated
+redirects are refused, and there are no automatic retries. 429 retry guidance is
+reported when supplied as seconds. API keys, headers and raw error bodies are
+never logged.
+
+First-party page fetching identifies itself as `ValuesEngine-DevelopmentResolver/1.0`,
+has a 15-second total timeout, a 2 MB response limit and at most five redirects.
+Only HTML and plain text are accepted. Requests allow public HTTP(S) on default
+ports, check DNS results and pin the selected public address for connection.
+Private/reserved destinations, cross-site redirects and HTTPS downgrades are
+refused. Same-host and www/non-www redirects are permitted. Requests carry no
+credentials or cookies. UTF-8 text and identity encoding are supported; compressed
+responses that ignore the identity request are reported as unavailable. HTTP
+blocking, recognised challenge pages and login walls produce `source_unavailable`;
+there is no CAPTCHA, login or bot-protection bypass. Challenge detection is
+conservative and cannot recognise every possible interstitial.
+
+HTML parsing uses `htmlparser2`, decodes character entities and ignores scripts,
+styles, templates, comments and explicitly hidden nodes. V1 only extracts numbers
+beside labels such as `company number`, `company no.`, `registered number` and
+`registered in England and Wales under number`. VAT/charity labels and unrelated
+numeric strings are excluded. Numbers stay strings and reuse importer trimming/
+uppercasing. Supported forms are eight digits or a recognised two-letter prefix
+with six digits, including SC, NI, OC and RC. No numbers are padded or guessed.
+Other registry formats remain unsupported in V1.
+
+Each candidate retains source URL, bounded nearby snippets and possible legal
+names. Legal-name extraction is conservative, expecting title-case or uppercase
+names ending in Limited/Ltd/PLC/LLP. All-lowercase or unusual names can require
+manual review. Name agreement normalises accents, punctuation, whitespace, `Ltd`
+and `&`; it does not use fuzzy matching or compare against the brand name.
+
+Confidence is a deterministic **uncalibrated heuristic**, with each contribution
+included in `signals`:
+
+| Signal | Weight |
+|---|---:|
+| Extracted number matches official profile | +0.80 |
+| All extracted nearby names agree | +0.15 |
+| A nearby name conflicts | −0.40 |
+| Company active / not active | +0.05 / −0.15 |
+| Multiple valid companies without this candidate being the unique explicit operator/seller | −0.25 |
+| Incomplete verification | −0.25 |
+
+Scores are clamped to [0, 1]: HIGH ≥0.90, MEDIUM ≥0.60, otherwise LOW. `PROPOSE`
+requires name agreement, active status and complete, unambiguous verification.
+Multiple valid numbers require `REVIEW` unless exactly one is explicitly described
+as the site operator/seller; remaining candidates still require review. Missing
+or conflicting names and inactive companies require `REVIEW`. No labelled number,
+unavailable source, or failed profile lookup produces `UNRESOLVED`. A 404 does not
+confirm the number. No proposal is marked `human_verified` or saved.
+
+At most ten unique candidates are looked up per page. Larger sets and partial API
+failures prevent PROPOSE. Repeated numbers are looked up once but retain all
+occurrences. A 401/429/missing key stops further API calls for that page. The CLI
+reports failures per brand and continues through the remaining configured URLs.
+No schema change is needed; migrations 0001 and 0002 remain unchanged.
