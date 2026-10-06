@@ -8,3 +8,4 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 supabase/.temp/
+benchmarks/runs/

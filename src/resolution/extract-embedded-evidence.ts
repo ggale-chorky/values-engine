@@ -1,25 +1,29 @@
 import { parseDocument } from 'htmlparser2';
-import { extractCompanyCandidates } from './extract-company-candidates.js';
-import type { ExtractedCandidate, ExtractionChannel } from './extract-company-candidates.js';
+import { extractCompanyCandidates, extractNamedEvidence } from './extract-company-candidates.js';
+import type { CandidateOccurrence, ExtractedCandidate, ExtractionChannel } from './extract-company-candidates.js';
 
 /** Parse data, never JavaScript. Each JSON string remains a separate semantic unit. */
-export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { candidates: ExtractedCandidate[]; incomplete: boolean } {
+export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { candidates: ExtractedCandidate[]; named_evidence: CandidateOccurrence[]; incomplete: boolean } {
   let incomplete = false;
   const candidates: ExtractedCandidate[] = [];
+  const namedEvidence: CandidateOccurrence[] = [];
   type Node = ReturnType<typeof parseDocument>['children'][number];
   let visited = 0;
   function values(value: unknown, path: string, channel: ExtractionChannel, depth = 0, sections: string[] = []): void {
     if (++visited > 10_000 || depth > 32) { incomplete = true; return; }
     if (typeof value === 'string') {
       if (value.length > 100_000) { incomplete = true; return; }
-      const found = extractCompanyCandidates(value, sourceUrl, /<\/?[a-z][^>]*>/i.test(value) ? 'text/html' : 'text/plain');
-      for (const candidate of found) for (const occurrence of candidate.occurrences) {
+      const type = /<\/?[a-z][^>]*>/i.test(value) ? 'text/html' : 'text/plain';
+      const found = extractCompanyCandidates(value, sourceUrl, type);
+      const named = extractNamedEvidence(value, sourceUrl, type);
+      for (const occurrence of [...found.flatMap(candidate => candidate.occurrences), ...named]) {
         occurrence.extraction_channel = channel;
         occurrence.retrieval_channel = 'embedded_page_data';
         occurrence.block.heading_context = [...sections, ...occurrence.block.heading_context];
         occurrence.block.dom_path = `${path}/${occurrence.block.dom_path}`;
       }
       candidates.push(...found);
+      namedEvidence.push(...named);
     } else if (Array.isArray(value)) value.forEach((item, index) => values(item, `${path}[${index}]`, channel, depth + 1, sections));
     else if (value && typeof value === 'object') {
       const record = value as Record<string, unknown>;
@@ -59,7 +63,7 @@ export function inspectEmbeddedEvidence(html: string, sourceUrl: string): { cand
     }
   }
   visit(parseDocument(html).children);
-  return { candidates, incomplete };
+  return { candidates, named_evidence: namedEvidence, incomplete };
 }
 
 export function extractEmbeddedEvidence(html: string, sourceUrl: string): ExtractedCandidate[] {

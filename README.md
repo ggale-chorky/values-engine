@@ -319,7 +319,8 @@ sentence, scoped heading context, DOM path/order and inferred role. Paragraphs,
 headings, list items and table cells stay separate. Names are associated within
 the same sentence; a uniquely named company and identifier can also bind an explicit
 postfix role across registration/address text in the same block. Names are never
-borrowed from an adjacent block/cell. Footer and
+borrowed from an adjacent block/cell during initial extraction. V2.3 separately
+links complementary evidence only under the same-document guards below. Footer and
 promotion/privacy/licensing sections are secondary evidence. Legal-name extraction
 is conservative, expecting title-case or uppercase
 names ending in Limited/Ltd/PLC/LLP. All-lowercase or unusual names can require
@@ -437,7 +438,8 @@ and lookalikes do not. The model-produced `source_domain` is retained for
 diagnostics only, including when it is absent or disagrees. The model's separate name/number/role fields are diagnostic suggestions;
 only deterministic extraction from its attributed evidence text enters Companies
 House verification. No legal-name-only fuzzy lookup is implemented: name-only
-claims require REVIEW. API/source-list/schema failures fail closed.
+claims require REVIEW unless a deterministic identifier can be linked through
+the same-document fusion guards below. API/source-list/schema failures fail closed.
 
 Each proposal and occurrence records `direct_http`, `embedded_page_data`, or
 `openai_web_search`. PROPOSE requires an extracted company number, official active
@@ -502,3 +504,103 @@ unverified identity for REVIEW. Without a credible identity it is UNRESOLVED.
 Two different verified, relevant entities competing for GB return REVIEW with
 `ambiguous_legal_entity` and no selected entity. No LLM ranking breaks that tie.
 All recommendations remain proposals, with no graph writes or approvals.
+
+
+### Resolver V2.3 same-document evidence fusion
+
+All three text paths (DOM, embedded JSON strings and discovery snippets) now retain
+named role evidence even without a registration number in that fragment. They
+share `classifyRole`, including explicit ordering-with-the-company/products-sold
+wording and supply-products-to-you wording. Previously identifier-gated extraction
+could discard a seller fragment when the registration lived in another JSON
+string or discovery snippet. Literal snippet ellipses are treated as gap markers
+inside the classifier; the supporting text itself is not rewritten.
+
+Before registry verification, `fuseDocumentEvidence` can link a named role fragment
+to identifier evidence only when both are primary, attributable first-party
+evidence with the same complete canonical document URL, equivalent normalised
+legal name, matching brand scope and matching GB market scope. URL comparison
+preserves paths and queries (removing only fragments and using existing hostname
+canonicalisation). Sharing a domain is insufficient. Names use the existing
+case/accent/punctuation/apostrophe/whitespace/Ltd normalisation, never fuzzy matching.
+The role must be explicit deterministic shopping-role evidence, not a model field
+or heading alone. Conflicting identifiers for a name, or conflicting relevant
+names for an identifier within that document, prevent fusion.
+
+Both occurrences remain separate. A role-only occurrence retains null raw/canonical
+identifier fields; its fusion metadata references the matched identifier and
+canonical URL. The candidate and its signals expose
+`same_document_evidence_fusion`. No sentence or company number is manufactured
+by joining quotes. Original snippets, JSON paths, sections and retrieval channels
+remain available. Secondary promoter/licensor/controller evidence remains visible.
+The fused candidate must still pass every V2.2 verification flag, including an
+independent active Companies House identity/name match and absence of blocking
+conflicts. Same-document identity linking is not registry verification or approval.
+
+The representative Estée terms fixtures exercise seller and registration snippets
+from one document (`659213` → `00659213`), alongside secondary loyalty evidence.
+The Charlotte embedded fixture exercises the exact supplied ellipsis/“we or us”
+supply wording with a separate registration fragment. These are local regression
+fixtures, not fresh live captures. No relationships or graph records are written.
+
+
+### Frozen Resolver V2.3 blind benchmark
+
+The frozen input is `benchmarks/beauty-uk-v1.csv`: exactly the requested 20 brands,
+with only `brand_name,domain,target_market` (`GB`). The harness rejects extra
+columns/fields, URLs in the domain field, invalid markets and duplicate brands.
+No company identifiers, legal names, legal-page URLs or parent mappings are supplied.
+`benchmarks/resolver-v23-freeze.json` pins the dataset and existing resolver source
+hashes; a test fails if they change. Future tuning belongs to a new benchmark/version.
+
+The existing orchestration requires a source URL. The thin adapter in
+`src/benchmark/domain-entry.ts` derives only `https://<normalised-domain>/` and invokes
+the unchanged V2.3 resolver. It may obtain evidence from that homepage or fall back
+to the existing domain-restricted discovery flow. It contains no brand-specific
+fallbacks or known legal-page links. All extraction, fusion, selection, confidence,
+role, market and verification logic stays frozen.
+
+Validate without network access, environment loading or output writes:
+
+```sh
+npm run benchmark:resolver -- --input benchmarks/beauty-uk-v1.csv --dry-run
+npm run benchmark:resolver -- --input benchmarks/beauty-uk-v1.csv --limit 3 --dry-run
+```
+
+A future authorised live run omits `--dry-run` and needs the existing OpenAI and
+Companies House environment keys. `--input` defaults to the frozen CSV; `--limit`
+must be a positive integer and selects the first N rows after validating the entire
+file. `--output` chooses a new run directory; otherwise a unique directory under
+`benchmarks/runs/` is used. Existing directories are refused. Generated runs are
+Git-ignored. Execution is sequential; a brand failure does not stop later brands.
+
+Each run writes:
+
+- `results.jsonl`: input fields, benchmark action/error, operational error codes and
+  the complete resolver result, including verification, registry matches, snippets,
+  raw/canonical identifiers, exclusions, secondary candidates and fusion metadata.
+- `results.csv`: brand/domain/market, action, selected entity/number/role/source,
+  retrieval channel, reason, fusion flag and error.
+- `audit.csv`: the same result columns plus blank `audit_outcome`,
+  `audited_legal_entity`, `audited_company_number`, `audited_role`, `audit_notes`.
+  Human `audit_outcome` values are CORRECT, INCORRECT or UNCLEAR; none are filled in.
+- `summary.json`: completed/planned totals; PROPOSE/REVIEW/UNRESOLVED/ERROR counts;
+  propose/review/unresolved/error rates; input filename/hash; Git SHA/dirty state;
+  timestamp; GB target; V2.3 source hashes; and model/configuration identity read
+  safely from the frozen discovery implementation. Each completed brand is flushed
+  to disk; the summary marks whether the planned run finished.
+
+ERROR means a thrown execution failure, or an unresolved/review result affected by
+provider/configuration/response failures. Ordinary blocked pages followed by a
+successful empty discovery remain UNRESOLVED. An independently successful PROPOSE
+is retained even if secondary evidence encountered a provider failure; those errors
+remain diagnostic. The resolver's original overall decision is always preserved in
+JSONL, even when the benchmark labels the run ERROR. Rates use all completed brands,
+including errors, as the denominator. No proposal precision is calculated before audit.
+Raw exceptions, credential/header fields and configured secret values are not
+written. The harness retains audit evidence rather than request/transport payloads.
+
+Known frozen limitation: some Charlotte live embedded-page transactional occurrences
+were still classified `unknown` despite an equivalent regression fixture resolving
+as seller. This is documented without further tuning; V2.3 remains frozen for the
+blind unseen-brand benchmark. The harness and tests make no Supabase writes.

@@ -17,8 +17,10 @@ export interface CandidateOccurrence {
   context_mismatch?: boolean;
   market_context_mismatch?: boolean;
   source_validated?: boolean;
-  raw_identifier: string;
-  canonical_identifier: string;
+  raw_identifier: string | null;
+  canonical_identifier: string | null;
+  same_document_evidence_fusion?: { canonical_source_url: string; matched_legal_name: string; canonical_identifier: string };
+  fusion_conflict?: boolean;
   source_url: string;
   extraction_channel: ExtractionChannel;
   retrieval_channel: RetrievalChannel;
@@ -111,12 +113,17 @@ export function pageText(content: string, type: 'text/html' | 'text/plain' = 'te
   return pageBlocks(content, type).map(block => block.text).join('\n');
 }
 
-function roleFor(beforeName: string, afterName: string, block: TextBlock): { role: CandidateRole; role_basis: CandidateOccurrence['role_basis'] } {
+export function classifyRole(beforeName: string, afterName: string, block: TextBlock): { role: CandidateRole; role_basis: CandidateOccurrence['role_basis'] } {
+  // Ellipsis in extracted snippets is a gap marker, not a new grammatical subject.
+  afterName = afterName.replace(/\.{2,}|…/g, ' ');
   if (/\b(former|previous|formerly|no longer|not)\b/i.test(beforeName + afterName)) return { role: 'unknown', role_basis: 'unknown' };
   // Explicit defined roles take precedence over general "we/us" operator wording.
   const licensor = afterName.match(/\(\s*[“"'](?:the\s+)?Licensor[”"'][^)]*\)/i);
   const noOtherSubject = (text: string) => !/\b(limited|ltd|plc|llp|they|third.party|another|other company|suppliers|retailers|while|whereas)\b/i.test(text.replace(/\([^)]*\)/g, ' '));
   if (licensor && noOtherSubject(afterName.slice(0, licensor.index))) return { role: 'licensor', role_basis: 'explicit' };
+  if (/\b(?:by\s+)?placing\s+an?\s+order\s+with\s*$/i.test(beforeName)
+    && /\bproducts?\b[^.!?;]{0,300}\bsold\s+on\s+(?:the\s+)?site\b/i.test(afterName)
+    && noOtherSubject(afterName)) return { role: 'seller', role_basis: 'explicit' };
   const supply = afterName.match(/\b(?:supply|supplies|sell|sells)\b[^.!?;]{0,400}\b(?:products|goods)\b[^.!?;]{0,400}\bto\s+you\b/i);
   if (supply && noOtherSubject(afterName.slice(0, supply.index))
     && !/[.!?]\s+(?!we\b)/i.test(afterName.slice(0, supply.index).replace(/\([^)]*\)/g, ' '))) {
@@ -157,12 +164,38 @@ function roleFor(beforeName: string, afterName: string, block: TextBlock): { rol
   return { role: 'unknown', role_basis: 'unknown' };
 }
 
+function legalNamePattern(): RegExp { return /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu; }
+const stripNamePreamble = (value: string) => value.replace(/^(?:(?:THE )?(?:SELLER|SITE OPERATOR|BRAND OPERATOR|PROMOTER|LICENSOR|DATA CONTROLLER) IS|WE ARE|COPYRIGHT)\s+/i, '');
+
+/** Retain named role statements even when the identifier lives elsewhere in the document. */
+export function extractNamedEvidence(content: string, sourceUrl: string,
+  type: 'text/html' | 'text/plain' = 'text/html'): CandidateOccurrence[] {
+  const occurrences: CandidateOccurrence[] = [];
+  for (const block of pageBlocks(content, type)) {
+    const names = [...block.text.matchAll(legalNamePattern())];
+    for (let index = 0; index < names.length; index++) {
+      const name = names[index]!;
+      const legalName = stripNamePreamble(name[0]);
+      const start = name.index + name[0].length - legalName.length;
+      const before = block.text.slice(index ? names[index - 1]!.index + names[index - 1]![0].length : 0, start);
+      const after = block.text.slice(name.index + name[0].length, names[index + 1]?.index);
+      const inferred = classifyRole(before, after, block);
+      occurrences.push({ raw_identifier: null, canonical_identifier: null, source_url: sourceUrl,
+        extraction_channel: 'visible_dom', retrieval_channel: 'direct_http', source_snippet: block.text,
+        possible_legal_name: legalName, ...inferred, block,
+        explicit_operator_or_seller: isShoppingRole(inferred.role) && inferred.role_basis === 'explicit' });
+    }
+  }
+  return occurrences;
+}
+
 export function extractCompanyCandidates(content: string, sourceUrl: string,
   type: 'text/html' | 'text/plain' = 'text/html'): ExtractedCandidate[] {
   const candidates = new Map<string, ExtractedCandidate>();
   for (const block of pageBlocks(content, type)) {
     // Intl segmentation preserves abbreviations such as U.K. and Ltd. better than splitting on every dot.
-    const masked = block.text.replace(/\bno\.(?=\s*[(#:]*\s*(?:[A-Z]{2}\s*)?\d)/gi, value => value.slice(0, -1) + '_');
+    const masked = block.text.replace(/\bno\.(?=\s*[(#:]*\s*(?:[A-Z]{2}\s*)?\d)/gi, value => value.slice(0, -1) + '_')
+      .replace(/\b(?:[A-Z]\.){2,}/g, value => value.replaceAll('.', '_'));
     const sentences = [...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(masked)]
       .map(item => block.text.slice(item.index, item.index + item.segment.length));
     for (const sentence of sentences) {
@@ -176,7 +209,7 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
         let number = normalizeCompanyNumber(rawIdentifier.replace(/\s+/g, ''))!;
         if (/^\d{1,7}$/.test(number) && explicitlyUkRegistration(block.text)) number = number.padStart(8, '0');
         if (!COMPANY_NUMBER_PATTERN.test(number)) continue;
-        const namePattern = /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu;
+        const namePattern = legalNamePattern();
         const names = [...before.matchAll(namePattern)];
         const blockNames = [...block.text.matchAll(namePattern)];
         const blockNumbers = [...block.text.matchAll(label)];
@@ -192,15 +225,15 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
         const afterName = name ? localName
           ? sentence.slice(match.index - before.length + name.index + name[0].length)
           : block.text.slice(name.index + name[0].length) : '';
-        let inferred = possibleName ? roleFor(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
+        let inferred = possibleName ? classifyRole(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
         if (possibleName && inferred.role === 'unknown' && boundPostfix
-          && !/\b(former|previous|formerly|no longer|not)\b/i.test(block.text)) inferred = roleFor('', postfix, block);
+          && !/\b(former|previous|formerly|no longer|not)\b/i.test(block.text)) inferred = classifyRole('', postfix, block);
         // A single named company/identifier in a block can have registry details
         // spanning sentence segmentation. Never borrow from another named entity.
         if (possibleName && inferred.role === 'unknown' && [...block.text.matchAll(namePattern)].length === 1
           && [...block.text.matchAll(label)].length === 1) {
           const offset = block.text.indexOf(possibleName);
-          inferred = roleFor(block.text.slice(0, offset), block.text.slice(offset + possibleName.length), block);
+          inferred = classifyRole(block.text.slice(0, offset), block.text.slice(offset + possibleName.length), block);
         }
         const occurrence: CandidateOccurrence = { raw_identifier: rawIdentifier, canonical_identifier: number, source_url: sourceUrl, extraction_channel: 'visible_dom', retrieval_channel: 'direct_http',
           source_snippet: boundPostfix ? block.text : sentence.trim(), possible_legal_name: possibleName,

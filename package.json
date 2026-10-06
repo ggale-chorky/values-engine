@@ -13,7 +13,8 @@
     "demo:evaluate": "node --import tsx src/scripts/demo-evaluate.ts",
     "demo:seed": "node --import tsx src/scripts/seed-demo.ts",
     "demo:live": "node --import tsx src/scripts/demo-live.ts",
-    "resolve:demo": "node --import tsx src/scripts/resolve-demo.ts"
+    "resolve:demo": "node --import tsx src/scripts/resolve-demo.ts",
+    "benchmark:resolver": "node --import tsx src/scripts/benchmark-resolver.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

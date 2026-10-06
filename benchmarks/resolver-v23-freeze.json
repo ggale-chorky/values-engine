@@ -1,0 +1,17 @@
+{
+  "resolver_version": "V2.3",
+  "benchmark_input_sha256": "d1eec88d92302263ef05ba5e2b425ae4df105aafa491c044357a954db1ed38d2",
+  "files": {
+    "src/resolution/companies-house.ts": "cb7c57bdc5f4e1ae037dde55300d45ad3cdb900c7e032d2c68fc9ccaaddef8e7",
+    "src/resolution/discover-first-party-evidence.ts": "35bdf6643587650d00b8fcd9fffded176b5a4071be715b11fde5308ec1dee4cb",
+    "src/resolution/evidence-market.ts": "99d69d86122181c2d96f31c74419189defd5321eaaa360aeb1e5d33ddd639cc5",
+    "src/resolution/extract-company-candidates.ts": "351b215560ccec8942607ed5bf1efd31903bbb787843186e29f85d91e215f10d",
+    "src/resolution/extract-embedded-evidence.ts": "267eeb6e39d0d81906a3bbb9ef633ed877eda4be2781f16f20c0b57f1dd2d139",
+    "src/resolution/fetch-first-party-page.ts": "04c248ea268fefb97033ad6fa488dcb6f9fdc2dea8c3d86694faf28bf45d108b",
+    "src/resolution/fuse-document-evidence.ts": "63a0b75b96642e6021790fc494f27983027c87b1f39b7b41e8af62ae1d9c8596",
+    "src/resolution/legal-name.ts": "4c07a5823b1010784bddd9911990943e2b8c3159c20161dca7378e31ccc2aeef",
+    "src/resolution/resolve-brand-legal-entity.ts": "efa15401ad56b84498c9325e9fd0a01353b97ccea4cabb1428d2d49787b9c820",
+    "src/resolution/resolve-with-discovery.ts": "acc6da9825577972b490d0ccf0e765b8b64327eac887c87d672e211a4d5c0237",
+    "src/resolution/select-candidate.ts": "10c76c5827335404d75896bdc81ea1fa129de72a5b9d0a6076561ad0728e8389"
+  }
+}

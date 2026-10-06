@@ -1,9 +1,12 @@
+import { fuseDocumentEvidence } from './fuse-document-evidence.js';
+import { normaliseLegalName } from './legal-name.js';
+export { normaliseLegalName } from './legal-name.js';
 import { marketContextMismatch } from './evidence-market.js';
 import type { TargetMarket } from './evidence-market.js';
 import { firstPartyUrl } from './discover-first-party-evidence.js';
 import { CompaniesHouseError } from './companies-house.js';
 import type { CompaniesHouseLookup, CompanyProfile } from './companies-house.js';
-import { evidenceContextMismatch, extractCompanyCandidates, isShoppingRole } from './extract-company-candidates.js';
+import { evidenceContextMismatch, extractCompanyCandidates, extractNamedEvidence, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, CandidateRole, ExtractedCandidate } from './extract-company-candidates.js';
 import { contentDiagnostics, fetchFirstPartyPage } from './fetch-first-party-page.js';
 import { inspectEmbeddedEvidence, mergeCandidates } from './extract-embedded-evidence.js';
@@ -34,6 +37,8 @@ export interface CandidateVerification {
   blocking_conflict: boolean;
 }
 export interface Proposal {
+  unlinked_named_evidence: CandidateOccurrence[];
+  same_document_evidence_fusion: boolean;
   target_market: TargetMarket;
   verification: CandidateVerification;
   retrieval_channel: import('./extract-company-candidates.js').RetrievalChannel;
@@ -56,14 +61,8 @@ export interface Proposal {
   recommended_action: 'PROPOSE' | 'REVIEW' | 'UNRESOLVED';
 }
 
-/** Formatting equivalence only; no fuzzy/brand-name-based identity inference. */
-export function normaliseLegalName(value: string): string {
-  return value.normalize('NFKD').replace(/\p{M}/gu, '').toUpperCase()
-    .replace(/\bLTD\b/g, 'LIMITED').replace(/&/g, 'AND').replace(/[^A-Z0-9]/g, '');
-}
-
 export function unresolved(brand: string, source: string, code: string, detail: Signal['detail'] = null): Proposal {
-  return { target_market: 'GB', verification: { source_validated: false, identifier_extracted_deterministically: false, registry_verified: false, registry_active: false, legal_name_verified: false, role_relevant: false, market_context_match: false, brand_context_match: false, blocking_conflict: false }, retrieval_channel: 'direct_http', reason: 'source_unavailable', retrieval_diagnostics: null,
+  return { unlinked_named_evidence: [], same_document_evidence_fusion: false, target_market: 'GB', verification: { source_validated: false, identifier_extracted_deterministically: false, registry_verified: false, registry_active: false, legal_name_verified: false, role_relevant: false, market_context_match: false, brand_context_match: false, blocking_conflict: false }, retrieval_channel: 'direct_http', reason: 'source_unavailable', retrieval_diagnostics: null,
     brand_name: brand, candidate_legal_entity_name: null, company_number: null, company_status: null,
     source_url: source, source_snippet: null, extracted_names: [], inferred_role: 'unknown', companies_house_match: null,
     evidence_groups: [], conflicting_evidence: [], signals: [{ code, weight: 0, detail }],
@@ -82,10 +81,12 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
     result.retrieval_diagnostics = page.diagnostics ?? null;
     return [result];
   }
-  const embedded = page.content_type === 'text/html' ? inspectEmbeddedEvidence(page.content, page.final_url) : { candidates: [], incomplete: false };
-  const all = mergeCandidates([...extractCompanyCandidates(page.content, page.final_url, page.content_type), ...embedded.candidates]);
+  const embedded = page.content_type === 'text/html' ? inspectEmbeddedEvidence(page.content, page.final_url) : { candidates: [], named_evidence: [], incomplete: false };
+  const named = [...extractNamedEvidence(page.content, page.final_url, page.content_type), ...embedded.named_evidence];
+  const all = fuseDocumentEvidence(mergeCandidates([...extractCompanyCandidates(page.content, page.final_url, page.content_type), ...embedded.candidates]), named, input);
   if (!all.length) {
     const result = unresolved(brand, page.final_url, 'no_company_number');
+    result.unlinked_named_evidence = named;
     const outcome = (page.diagnostics ?? contentDiagnostics(page.content, page.content_type)).outcome;
     result.reason = outcome === 'retrieved_content_incomplete' ? 'retrieved_content_incomplete'
       : outcome === 'empty_or_shell' ? 'insufficient_visible_text' : 'no_company_evidence';
@@ -93,6 +94,7 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
     return [result];
   }
   const proposals = await verifyCandidateEvidence(all, input, dependencies.companiesHouse, page.diagnostics ?? null);
+  if (proposals[0]) proposals[0].unlinked_named_evidence = named;
   if (embedded.incomplete) for (const proposal of proposals) {
     proposal.signals.push({ code: 'embedded_inspection_incomplete', weight: 0, detail: 'JSON parse or inspection limit' });
     // A skipped unrelated JSON payload is diagnostic, not a veto on parsed evidence.
@@ -171,7 +173,9 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
       identifier_extracted_deterministically: candidate.occurrences.some(occurrence => occurrence.canonical_identifier === candidate.company_number),
       registry_verified: !!profile, registry_active: profile?.company_status === 'active', legal_name_verified: false,
       role_relevant: selected.length > 0, market_context_match: candidate.occurrences.some(occurrence => !occurrence.market_context_mismatch),
-      brand_context_match: candidate.occurrences.some(occurrence => !occurrence.context_mismatch), blocking_conflict: false };
+      brand_context_match: candidate.occurrences.some(occurrence => !occurrence.context_mismatch), blocking_conflict: candidate.occurrences.some(occurrence => occurrence.fusion_conflict) };
+    base.same_document_evidence_fusion = considered.some(occurrence => !!occurrence.same_document_evidence_fusion);
+    if (base.same_document_evidence_fusion) base.signals.push({ code: 'same_document_evidence_fusion', weight: 0, detail: candidate.company_number });
     if (!profile) {
       base.reason = !base.verification.market_context_match ? 'market_context_mismatch'
         : !base.verification.brand_context_match ? 'context_mismatch' : 'company_verification_failed';
@@ -212,7 +216,9 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     if (candidate.occurrences.length > considered.length) signals.push({ code: 'unrelated_or_secondary_evidence_retained',
       weight: 0, detail: candidate.occurrences.length - considered.length });
     base.verification.legal_name_verified = nameAgreement;
-    base.verification.blocking_conflict = nameConflict || ambiguous;
+    const fusionConflict = candidate.occurrences.some(occurrence => occurrence.fusion_conflict);
+    base.verification.blocking_conflict = nameConflict || ambiguous || fusionConflict;
+    if (fusionConflict) signals.push({ code: 'same_document_fusion_conflict', weight: 0, detail: candidate.company_number });
     const score = Math.round(Math.max(0, Math.min(1, signals.reduce((sum, signal) => sum + signal.weight, 0))) * 100) / 100;
     base.confidence = { score, level: score >= 0.9 ? 'HIGH' : score >= 0.6 ? 'MEDIUM' : 'LOW', calibrated: false };
     const state = base.verification;
@@ -220,7 +226,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
       && state.registry_active && state.legal_name_verified && state.role_relevant && state.market_context_match
       && state.brand_context_match && !state.blocking_conflict ? 'PROPOSE' : 'REVIEW';
     base.reason = base.recommended_action === 'PROPOSE' ? 'verified_operating_entity'
-      : ambiguous ? 'ambiguous_legal_entity' : contextMismatch ? 'context_mismatch' : nameConflict ? 'conflicting_company_evidence'
+      : ambiguous ? 'ambiguous_legal_entity' : contextMismatch ? 'context_mismatch' : nameConflict || fusionConflict ? 'conflicting_company_evidence'
       : !roleResolved ? 'relationship_role_inadequate'
       : !active ? 'company_inactive' : 'legal_name_unavailable';
     return base;
