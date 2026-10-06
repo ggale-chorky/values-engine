@@ -1,3 +1,7 @@
+import { marketContextMismatch } from './evidence-market.js';
+import type { TargetMarket } from './evidence-market.js';
+import { selectCandidate } from './select-candidate.js';
+import type { OverallSelection } from './select-candidate.js';
 import type { CompaniesHouseLookup } from './companies-house.js';
 import { discoverFirstPartyEvidence, discoveryError, firstPartyUrl, normaliseDiscoveryDomain } from './discover-first-party-evidence.js';
 import type { DiscoveryResult, EvidenceDiscovery } from './discover-first-party-evidence.js';
@@ -8,28 +12,34 @@ import type { PageResult } from './fetch-first-party-page.js';
 import { resolveBrandLegalEntity, unresolved, verifyCandidateEvidence } from './resolve-brand-legal-entity.js';
 import type { Proposal } from './resolve-brand-legal-entity.js';
 
-export interface ResolverResult {
+export interface ResolverResult extends OverallSelection {
   proposals: Proposal[];
   direct_proposals: Proposal[];
   discovery: DiscoveryResult | null;
-  discovery_rejections: { index: number; reason: 'missing_or_wrong_domain' | 'source_not_in_search_sources' | 'no_deterministic_identifier' | 'context_mismatch' }[];
+  discovery_rejections: { index: number; reason: 'missing_or_wrong_domain' | 'source_not_in_search_sources' | 'no_deterministic_identifier' | 'context_mismatch' | 'market_context_mismatch' }[];
   attempts: { channel: 'direct_http' | 'embedded_page_data' | 'openai_web_search'; outcome: string }[];
 }
 
 /** Discovery proposes evidence; only the shared deterministic verifier decides recommendations. */
-export async function resolveWithDiscovery(input: { brand_name: string; source_url: string; domain: string }, dependencies: {
+export async function resolveWithDiscovery(input: { brand_name: string; source_url: string; domain: string; target_market?: TargetMarket }, dependencies: {
   companiesHouse: CompaniesHouseLookup;
   fetchPage?: (url: string) => Promise<PageResult>;
   discover?: EvidenceDiscovery;
 }): Promise<ResolverResult> {
-  const direct = await resolveBrandLegalEntity(input, dependencies);
-  const result: ResolverResult = { proposals: direct, direct_proposals: direct, discovery: null, discovery_rejections: [],
+  // Cache registry results within this resolution, including failures, across channels.
+  const profiles = new Map<string, ReturnType<CompaniesHouseLookup['getCompanyProfile']>>();
+  const companiesHouse: CompaniesHouseLookup = { getCompanyProfile: number => {
+    if (!profiles.has(number)) profiles.set(number, dependencies.companiesHouse.getCompanyProfile(number));
+    return profiles.get(number)!;
+  } };
+  const direct = await resolveBrandLegalEntity(input, { ...dependencies, companiesHouse });
+  const result: ResolverResult = { ...selectCandidate(direct), proposals: direct, direct_proposals: direct, discovery: null, discovery_rejections: [],
     attempts: [{ channel: 'direct_http', outcome: direct[0]?.retrieval_diagnostics?.outcome ?? direct[0]!.reason }] };
   if (direct.some(item => item.evidence_groups.some(group => group.occurrences.some(occurrence => occurrence.retrieval_channel === 'embedded_page_data')))) {
     result.attempts.push({ channel: 'embedded_page_data', outcome: 'evidence_found' });
   }
-  const fallbackReasons = new Set(['source_blocked', 'source_unavailable', 'insufficient_visible_text', 'retrieved_content_incomplete', 'no_company_evidence', 'relationship_role_inadequate']);
-  if (direct.some(item => item.recommended_action === 'PROPOSE') || !direct.every(item => fallbackReasons.has(item.reason))) return result;
+  const fallbackReasons = new Set(['source_blocked', 'source_unavailable', 'insufficient_visible_text', 'retrieved_content_incomplete', 'no_company_evidence', 'relationship_role_inadequate', 'context_mismatch', 'market_context_mismatch', 'company_verification_failed', 'legal_name_unavailable']);
+  if (direct.some(item => item.recommended_action === 'PROPOSE') || !direct.some(item => fallbackReasons.has(item.reason))) return result;
   const domain = normaliseDiscoveryDomain(input.domain);
   if (!domain || !firstPartyUrl(input.source_url, domain)) {
     result.attempts.push({ channel: 'openai_web_search', outcome: 'invalid_domain' });
@@ -56,6 +66,9 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
     if (evidenceContextMismatch(candidate.evidence_text, input.brand_name)) {
       result.discovery_rejections.push({ index, reason: 'context_mismatch' }); return;
     }
+    if (marketContextMismatch(candidate.evidence_text, candidate.source_url!, input.target_market ?? 'GB')) {
+      result.discovery_rejections.push({ index, reason: 'market_context_mismatch' }); return;
+    }
     // Treat quote/claim text as untrusted plain text. Never turn model-supplied
     // name/number/role fields into a synthetic sentence or a verified relationship.
     const extracted = extractCompanyCandidates(candidate.evidence_text, candidate.source_url!, 'text/plain');
@@ -66,6 +79,9 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
       proposal.reason = 'company_verification_failed';
       proposal.retrieval_channel = 'openai_web_search';
       proposal.source_snippet = candidate.evidence_text;
+      proposal.verification.source_validated = true;
+      proposal.verification.market_context_match = true;
+      proposal.verification.brand_context_match = true;
       unverified.push(proposal);
     }
     for (const item of extracted) for (const occurrence of item.occurrences) {
@@ -75,20 +91,15 @@ export async function resolveWithDiscovery(input: { brand_name: string; source_u
     found.push(...extracted);
   });
   result.attempts.push({ channel: 'openai_web_search', outcome: found.length ? 'evidence_found' : 'no_usable_evidence' });
-  if (!found.length) { result.proposals = unverified.length ? [...direct, ...unverified] : direct; return result; }
+  if (!found.length) { result.proposals = unverified.length ? [...direct, ...unverified] : direct; return { ...result, ...selectCandidate(result.proposals) }; }
   // Preserve relevant conflicts across pages/channels instead of selecting the best-looking result.
   const prior: ExtractedCandidate[] = direct.flatMap(proposal => proposal.company_number ? [{ company_number: proposal.company_number,
     source_url: proposal.source_url, occurrences: proposal.evidence_groups.flatMap(group => group.occurrences) }] : []);
-  const verified = await verifyCandidateEvidence(mergeCandidates([...prior, ...found]), input, dependencies.companiesHouse, direct[0]?.retrieval_diagnostics ?? null);
+  const verified = await verifyCandidateEvidence(mergeCandidates([...prior, ...found]), input, companiesHouse, direct[0]?.retrieval_diagnostics ?? null);
   for (const proposal of verified) {
     proposal.signals.push({ code: 'discovery_evidence_requires_verification', weight: 0, detail: 'OpenAI source text is discovery evidence, not ownership truth' });
     if (proposal.recommended_action === 'UNRESOLVED') proposal.recommended_action = 'REVIEW';
   }
-  // Unverified additional evidence means this discovery result is not complete.
-  if (unverified.length) for (const proposal of verified) {
-    proposal.recommended_action = 'REVIEW'; proposal.reason = 'incomplete_verification';
-    proposal.signals.push({ code: 'unverified_discovery_candidate', weight: 0, detail: unverified.length });
-  }
   result.proposals = [...verified, ...unverified];
-  return result;
+  return { ...result, ...selectCandidate(result.proposals) };
 }

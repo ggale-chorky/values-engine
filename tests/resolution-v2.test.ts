@@ -71,10 +71,11 @@ describe('discovery orchestration', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(result.proposals[0]).toMatchObject({ recommended_action: 'PROPOSE', retrieval_channel: 'embedded_page_data' });
   });
-  it('does not propose embedded evidence if another JSON payload could not be inspected', async () => {
+  it('keeps unrelated malformed JSON diagnostic without vetoing verified embedded evidence', async () => {
     const html = `<script type="application/json">${JSON.stringify({ description: seller })}</script><script type="application/json">{broken</script>`;
     const result = await resolveWithDiscovery(input, { fetchPage: page(html), companiesHouse: profile(), discover: vi.fn() });
-    expect(result.proposals[0]).toMatchObject({ recommended_action: 'REVIEW', reason: 'incomplete_verification' });
+    expect(result.proposals[0]).toMatchObject({ recommended_action: 'PROPOSE', reason: 'verified_operating_entity' });
+    expect(result.proposals[0]?.signals.some(signal => signal.code === 'embedded_inspection_incomplete')).toBe(true);
   });
   it('blocked source invokes domain-restricted discovery and verifies its evidence', async () => {
     const discover = vi.fn(async () => discovery());

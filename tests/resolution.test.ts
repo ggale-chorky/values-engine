@@ -70,20 +70,22 @@ describe('deterministic resolver proposals', () => {
     expect(results.map(result => result.recommended_action)).toEqual(['PROPOSE', 'REVIEW']);
   });
 
-  it('does not choose between two explicit operators, even if one name conflicts', async () => {
+  it('does not let another candidate failing name verification veto a verified operator', async () => {
     const companiesHouse = { getCompanyProfile: vi.fn(async (number: string) => official(number === '00123456' ? 'ALPHA LIMITED' : 'BETA LIMITED', number)) };
     const results = await resolveBrandLegalEntity(input, { companiesHouse,
       fetchPage: page('<p>This site is operated by Alpha Limited, company number 00123456.</p><p>The seller is Other Limited, company number 00654321.</p>') });
-    expect(results.map(result => result.recommended_action)).toEqual(['REVIEW', 'REVIEW']);
+    expect(results.map(result => result.recommended_action)).toEqual(['PROPOSE', 'REVIEW']);
   });
 
-  it('caps candidate lookups and marks the verification incomplete', async () => {
+  it('caps lookups while retaining candidate-specific verification states', async () => {
     const content = Array.from({ length: 11 }, (_, i) => `<p>Alpha Limited, company number ${String(i + 1).padStart(8, '0')}</p>`).join('');
     const companiesHouse = { getCompanyProfile: vi.fn(async (number: string) => official('ALPHA LIMITED', number)) };
     const results = await resolveBrandLegalEntity(input, { companiesHouse, fetchPage: page(content) });
     expect(companiesHouse.getCompanyProfile).toHaveBeenCalledTimes(10);
-    expect(results.every(result => result.recommended_action === 'REVIEW'
-      && result.signals.some(signal => signal.code === 'incomplete_verification' && signal.detail === 11))).toBe(true);
+    expect(results).toHaveLength(11);
+    expect(results.slice(0, 10).every(result => result.verification.registry_verified)).toBe(true);
+    expect(results[10]?.verification.registry_verified).toBe(false);
+    expect(results[10]?.signals.some(signal => signal.code === 'companies_house_lookup_limit')).toBe(true);
   });
 
   it.each(['No registration information. Call 08037372.', 'Company no. 123456789'])('does not search/guess when no valid number exists', async content => {

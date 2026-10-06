@@ -308,8 +308,11 @@ beside labels such as `company number`, `company no.`, `registered number` and
 `registered in England and Wales under number`. VAT/charity labels and unrelated
 numeric strings are excluded. Numbers stay strings and reuse importer trimming/
 uppercasing. Supported forms are eight digits or a recognised two-letter prefix
-with six digits, including SC, NI, OC and RC. No numbers are padded or guessed.
-Other registry formats remain unsupported in V1.
+with six digits, including SC, NI, OC and RC. Explicitly labelled UK/England &
+Wales numeric registrations of 1–8 digits are left-padded to eight digits for
+Companies House lookup. Unlabelled numbers or short numbers without explicit UK
+registration context are not padded. Each occurrence preserves `raw_identifier`
+and `canonical_identifier`; prefixed identifiers keep their existing rules.
 
 Each occurrence retains its complete semantic text block, exact supporting
 sentence, scoped heading context, DOM path/order and inferred role. Paragraphs,
@@ -381,7 +384,6 @@ included in `signals`:
 | Company active / not active | +0.05 / −0.15 |
 | Multiple primary operating entities | −0.25 |
 | Shopping role unresolved or only secondary evidence | −0.25 |
-| Incomplete verification | −0.25 |
 
 Scores are clamped to [0, 1]: HIGH ≥0.90, MEDIUM ≥0.60, otherwise LOW. `PROPOSE`
 requires name agreement, active status, a primary shopping role and complete,
@@ -391,9 +393,11 @@ unresolved roles and inactive companies require `REVIEW`. No labelled number,
 unavailable source, or failed profile lookup produces `UNRESOLVED`. A 404 does not
 confirm the number. No proposal is marked `human_verified` or saved.
 
-At most ten unique candidates are looked up per page. Larger sets and partial API
-failures prevent PROPOSE. Repeated numbers are looked up once but retain all
-occurrences. A 401/429/missing key stops further API calls for that page. The CLI
+Each verification pass attempts at most ten candidate lookups, prioritising
+relevant target-market evidence. Unchecked candidates remain in diagnostics with
+unverified state; unrelated failures and limits do not veto verified candidates.
+Registry results are cached across direct/discovery passes within one resolution.
+Repeated numbers retain all occurrences. A 401/429/missing key stops further API calls for that page. The CLI
 reports failures per brand and continues through the remaining configured URLs.
 No schema change is needed; migrations 0001 and 0002 remain unchanged.
 
@@ -407,8 +411,9 @@ HTML strings) use the same extractor. Explicit legal-name/company-number fields
 within one JSON object can identify a candidate but do not establish its role.
 Unrelated JSON values are never concatenated. JSON paths and extraction channels
 (`visible_dom`, `structured_data`, `embedded_page_state`, or `discovery_text`) stay
-on each occurrence. Malformed/oversized/deep JSON is skipped and incomplete embedded
-inspection cannot produce an embedded PROPOSE. Executable application-state
+on each occurrence. Malformed/oversized/deep JSON is skipped and recorded as an
+inspection diagnostic; it does not veto a fully parsed, independently verified
+candidate from another payload. Executable application-state
 assignments and streaming JavaScript payloads are deliberately unsupported.
 
 The official `openai` SDK reads `OPENAI_API_KEY` only when discovery is needed.
@@ -437,7 +442,7 @@ claims require REVIEW. API/source-list/schema failures fail closed.
 Each proposal and occurrence records `direct_http`, `embedded_page_data`, or
 `openai_web_search`. PROPOSE requires an extracted company number, official active
 Companies House profile, matching legal name, shopping role and no relevant
-conflicts/incomplete verification. Search claims without verification remain
+candidate-specific conflicts or missing verification. Search claims without verification remain
 REVIEW; invalid/unattributed sources do not become candidates. Search text can be
 stale or inaccurate, and Companies House confirms company identity rather than
 ownership of a brand. Even PROPOSE is only a reviewable proposal, never a graph
@@ -463,3 +468,37 @@ from a legal-company-name mismatch (for example, Vichy versus L'Oreal).
 Discovery failure retains existing direct/embedded proposals and diagnostics.
 The Vichy and Charlotte fixtures are representative local regressions, not fresh
 live retrievals; the Islestarr identifier in the embedded fixture is synthetic.
+
+
+### Resolver V2.2 candidate verification and overall decision
+
+The resolver defaults to `target_market: GB`. Evidence on explicitly foreign-market
+paths/domains or with recognised foreign registration/customer/legal context is
+retained as secondary diagnostic evidence (`market_context_mismatch`) and excluded
+from UK candidate selection. Explicit different-brand privacy/brand scopes are
+similarly excluded as `context_mismatch`. These checks are conservative heuristics,
+not a complete jurisdiction classifier; unspecified market context uses the GB
+default. No inference is made from the mismatch between a brand and a legal name.
+
+Each candidate exposes `verification`: source validation, deterministic identifier,
+registry verification and active status, legal-name agreement, role relevance,
+market/brand context match and blocking conflict. PROPOSE is derived from those
+fields, never the numeric confidence score. Unusable/no-identifier evidence,
+foreign-market records and unrelated promoters/licensors do not impose a batch
+veto. Same-identifier relevant name conflicts still block that candidate.
+
+Direct DOM, page-state and discovery snippets share the same extractor and are
+merged by canonical company identifier before verification. Stronger discovered
+UK seller/site-operator evidence can supersede a direct loyalty/promoter record;
+both occurrences remain visible. A successful direct resolution still avoids an
+unnecessary discovery call. With no adequate direct candidate, discovery can add
+stronger evidence without losing the direct evidence or repeating cached lookups.
+
+`resolveWithDiscovery` returns `overall`, `selected_candidate`,
+`supporting_candidates` and `secondary_candidates`, alongside all proposals,
+direct results and discovery diagnostics. Selection prefers a fully verified
+relevant candidate, then a verified identity with inadequate role, then an
+unverified identity for REVIEW. Without a credible identity it is UNRESOLVED.
+Two different verified, relevant entities competing for GB return REVIEW with
+`ambiguous_legal_entity` and no selected entity. No LLM ranking breaks that tie.
+All recommendations remain proposals, with no graph writes or approvals.

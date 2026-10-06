@@ -1,3 +1,4 @@
+import { explicitlyUkRegistration } from './evidence-market.js';
 import { parseDocument } from 'htmlparser2';
 import { normalizeCompanyNumber } from '../importers/gender-pay-gap.js';
 import { COMPANY_NUMBER_PATTERN } from './companies-house.js';
@@ -14,6 +15,10 @@ export interface TextBlock {
 }
 export interface CandidateOccurrence {
   context_mismatch?: boolean;
+  market_context_mismatch?: boolean;
+  source_validated?: boolean;
+  raw_identifier: string;
+  canonical_identifier: string;
   source_url: string;
   extraction_channel: ExtractionChannel;
   retrieval_channel: RetrievalChannel;
@@ -31,6 +36,11 @@ export const isShoppingRole = (role: CandidateRole) => ['site_operator', 'seller
 export function evidenceContextMismatch(text: string, brand: string): boolean {
   const normalise = (value: string) => value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const labels = [...text.matchAll(/\b(?:brand|brand name)\s*:\s*([^\n.;]{1,80})|\bterms for [“"]([^”"\n]{1,80})[”"]/gi)];
+  const privacyScope = text.match(/\bprivacy (?:policy|notice) (?:for|of) [“"]?([^.;\n”"]{1,80})/i);
+  if (privacyScope) {
+    const scope = privacyScope[1]!.replace(/\s+(?:UK|United Kingdom|Singapore|USA|United States|Ireland)$/i, '').trim();
+    if (normalise(scope) !== normalise(brand)) return true;
+  }
   return labels.some(match => normalise((match[1] ?? match[2])!.trim()) !== normalise(brand));
 }
 
@@ -156,13 +166,15 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
     const sentences = [...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(masked)]
       .map(item => block.text.slice(item.index, item.index + item.segment.length));
     for (const sentence of sentences) {
-      const label = /\b(?:company\s+(?:registration\s+)?(?:number|no\.?)|registered(?:\s+company)?\s+(?:number|no\.?)|registration\s+number|registered\s+in\s+(?:england(?:\s+and\s+wales)?|scotland|northern\s+ireland)\s+(?:under\s+)?(?:company\s+)?(?:number|no\.?))[\s:.,#()\[\]–—-]{0,24}(?:is\s+)?((?:[A-Z]{2}\s*)?\d{6,8})(?![\p{L}\p{N}])/giu;
+      const label = /\b(?:company\s+(?:registration\s+)?(?:number|no\.?)|registered(?:\s+company)?\s+(?:number|no\.?)|registration\s+number|registered\s+in\s+(?:england(?:\s+and\s+wales)?|scotland|northern\s+ireland)\s+(?:under\s+)?(?:company\s+)?(?:number|no\.?))[\s:.,#()\[\]–—-]{0,24}(?:is\s+)?((?:[A-Z]{2}\s*)?\d{1,8})(?![\p{L}\p{N}])/giu;
       let previousEnd = 0;
       for (const match of sentence.matchAll(label)) {
         const before = sentence.slice(previousEnd, match.index);
         previousEnd = match.index + match[0].length;
         if (/(?:VAT|tax|charity|phone|telephone)\s*$/i.test(before)) continue;
-        const number = normalizeCompanyNumber(match[1]!.replace(/\s+/g, ''))!;
+        const rawIdentifier = match[1]!;
+        let number = normalizeCompanyNumber(rawIdentifier.replace(/\s+/g, ''))!;
+        if (/^\d{1,7}$/.test(number) && explicitlyUkRegistration(block.text)) number = number.padStart(8, '0');
         if (!COMPANY_NUMBER_PATTERN.test(number)) continue;
         const namePattern = /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu;
         const names = [...before.matchAll(namePattern)];
@@ -190,7 +202,7 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
           const offset = block.text.indexOf(possibleName);
           inferred = roleFor(block.text.slice(0, offset), block.text.slice(offset + possibleName.length), block);
         }
-        const occurrence: CandidateOccurrence = { source_url: sourceUrl, extraction_channel: 'visible_dom', retrieval_channel: 'direct_http',
+        const occurrence: CandidateOccurrence = { raw_identifier: rawIdentifier, canonical_identifier: number, source_url: sourceUrl, extraction_channel: 'visible_dom', retrieval_channel: 'direct_http',
           source_snippet: boundPostfix ? block.text : sentence.trim(), possible_legal_name: possibleName,
           ...inferred, block, explicit_operator_or_seller: isShoppingRole(inferred.role) && inferred.role_basis === 'explicit' };
         const previous = candidates.get(number);

@@ -15,6 +15,7 @@ export async function main() {
         domain: new URL(item.source_url).hostname.replace(/^www\./, '') }, { companiesHouse });
       console.log(item.brand);
       for (const attempt of result.attempts) console.log(`→ ${attempt.channel}: ${attempt.outcome}`);
+      console.log(`→ overall: ${result.overall.recommended_action} (${result.overall.reason}) → ${result.overall.company_number ?? 'no selected entity'}`);
       for (const proposal of result.proposals) {
         console.log(`→ ${proposal.retrieval_channel}: ${proposal.company_number ?? 'no verified identifier'}\n→ Companies House: ${proposal.companies_house_match?.company_name ?? 'unverified'}\n→ role: ${proposal.inferred_role}\n→ ${proposal.recommended_action}`);
         console.log(JSON.stringify(proposal, null, 2));
