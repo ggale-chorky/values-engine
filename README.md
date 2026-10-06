@@ -301,7 +301,7 @@ there is no CAPTCHA, login or bot-protection bypass. Challenge detection is
 conservative and cannot recognise every possible interstitial.
 
 HTML parsing uses `htmlparser2`, decodes character entities and ignores scripts,
-styles, templates, comments and explicitly hidden nodes. V1 only extracts numbers
+styles, templates, comments, navigation/menus and explicitly hidden nodes. V1 only extracts numbers
 beside labels such as `company number`, `company no.`, `registered number` and
 `registered in England and Wales under number`. VAT/charity labels and unrelated
 numeric strings are excluded. Numbers stay strings and reuse importer trimming/
@@ -309,11 +309,40 @@ uppercasing. Supported forms are eight digits or a recognised two-letter prefix
 with six digits, including SC, NI, OC and RC. No numbers are padded or guessed.
 Other registry formats remain unsupported in V1.
 
-Each candidate retains source URL, bounded nearby snippets and possible legal
-names. Legal-name extraction is conservative, expecting title-case or uppercase
+Each occurrence retains its complete semantic text block, exact supporting
+sentence, scoped heading context, DOM path/order and inferred role. Paragraphs,
+headings, list items and table cells stay separate. Names are associated within
+the same sentence, never borrowed from an adjacent block/cell. Footer and
+promotion/privacy/licensing sections are secondary evidence. Legal-name extraction
+is conservative, expecting title-case or uppercase
 names ending in Limited/Ltd/PLC/LLP. All-lowercase or unusual names can require
 manual review. Name agreement normalises accents, punctuation, whitespace, `Ltd`
 and `&`; it does not use fuzzy matching or compare against the brand name.
+
+Name and role are extracted together. Roles are `site_operator`, `seller`,
+`brand_operator`, `promoter`, `licensor`, `data_controller` and `unknown`. An
+explicit statement such as "seller is" or "site is operated by" identifies a
+role. Registration wording inside a scoped Terms of Sale section can identify
+the seller; an About Us heading or registration number alone is insufficient.
+Negated/former-role wording is not treated as a current shopping relationship.
+
+Evidence is grouped by company number, normalised extracted name, role and page
+context. Primary shopping-role evidence drives a proposal when present. Unrelated
+roles and secondary/footer occurrences remain visible but cannot introduce a
+name conflict against that evidence. Similarly authoritative shopping-role
+statements attaching different names to the same number still require REVIEW,
+as do different numbers identifying competing operating entities. Unknown or
+unrelated roles alone cannot produce a shopping proposal.
+
+The CLI prints complete JSON diagnostics: official profile match, inferred role,
+all grouped occurrences, supporting blocks and conflicting evidence with an
+`impacts_recommendation` flag. No first-party retrieval or blocking behaviour has
+changed. The Charlotte fixture includes both a Terms of Sale/About Us company
+registration and unrelated Islestarr promotional/footer text. The Estée name/number
+regression uses representative loyalty-only wording and expects REVIEW, because a
+programme promoter alone does not establish the shopping role. A separate generic
+synthetic fixture tests explicit seller/site-operator wording producing PROPOSE.
+No new live evidence is asserted by these fixtures.
 
 Confidence is a deterministic **uncalibrated heuristic**, with each contribution
 included in `signals`:
@@ -321,17 +350,18 @@ included in `signals`:
 | Signal | Weight |
 |---|---:|
 | Extracted number matches official profile | +0.80 |
-| All extracted nearby names agree | +0.15 |
-| A nearby name conflicts | −0.40 |
+| All considered names agree | +0.15 |
+| A considered name conflicts | −0.40 |
 | Company active / not active | +0.05 / −0.15 |
-| Multiple valid companies without this candidate being the unique explicit operator/seller | −0.25 |
+| Multiple primary operating entities | −0.25 |
+| Shopping role unresolved or only secondary evidence | −0.25 |
 | Incomplete verification | −0.25 |
 
 Scores are clamped to [0, 1]: HIGH ≥0.90, MEDIUM ≥0.60, otherwise LOW. `PROPOSE`
-requires name agreement, active status and complete, unambiguous verification.
-Multiple valid numbers require `REVIEW` unless exactly one is explicitly described
-as the site operator/seller; remaining candidates still require review. Missing
-or conflicting names and inactive companies require `REVIEW`. No labelled number,
+requires name agreement, active status, a primary shopping role and complete,
+unambiguous verification. Unrelated companies elsewhere on a page do not by
+themselves lower confidence in the operating entity. Missing or conflicting names,
+unresolved roles and inactive companies require `REVIEW`. No labelled number,
 unavailable source, or failed profile lookup produces `UNRESOLVED`. A 404 does not
 confirm the number. No proposal is marked `human_verified` or saved.
 

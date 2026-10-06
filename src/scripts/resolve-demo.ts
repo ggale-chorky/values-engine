@@ -13,7 +13,7 @@ export async function main() {
     try {
       const proposals = await resolveBrandLegalEntity({ brand_name: item.brand, source_url: item.source_url }, { companiesHouse });
       for (const proposal of proposals) {
-        console.log(`${item.brand}\n→ extracted ${proposal.company_number ?? 'none'}\n→ Companies House: ${proposal.candidate_legal_entity_name ?? 'unresolved'}\n→ confidence: ${proposal.confidence.level} (${proposal.confidence.score}, heuristic)\n→ recommendation: ${proposal.recommended_action}\n→ signals: ${proposal.signals.map(signal => signal.code + (signal.detail === null ? '' : `=${signal.detail}`)).join(', ')}`);
+        console.log(JSON.stringify(proposal, null, 2));
       }
     } catch {
       // One inaccessible source must not stop the remaining brands; no raw errors.

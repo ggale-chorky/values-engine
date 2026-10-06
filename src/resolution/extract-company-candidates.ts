@@ -1,60 +1,147 @@
-import { Parser } from 'htmlparser2';
+import { parseDocument } from 'htmlparser2';
 import { normalizeCompanyNumber } from '../importers/gender-pay-gap.js';
 import { COMPANY_NUMBER_PATTERN } from './companies-house.js';
 
+export type CandidateRole = 'site_operator' | 'seller' | 'brand_operator' | 'promoter' | 'licensor' | 'data_controller' | 'unknown';
+export interface TextBlock {
+  text: string;
+  heading_context: string[];
+  dom_path: string;
+  dom_order: number;
+  authority: 'primary' | 'secondary';
+}
 export interface CandidateOccurrence {
   source_snippet: string;
   possible_legal_name: string | null;
+  role: CandidateRole;
+  role_basis: 'explicit' | 'section_context' | 'unknown';
+  block: TextBlock;
   explicit_operator_or_seller: boolean;
 }
-export interface ExtractedCandidate {
-  company_number: string;
-  source_url: string;
-  occurrences: CandidateOccurrence[];
+export interface ExtractedCandidate { company_number: string; source_url: string; occurrences: CandidateOccurrence[] }
+export const isShoppingRole = (role: CandidateRole) => ['site_operator', 'seller', 'brand_operator'].includes(role);
+
+type Node = ReturnType<typeof parseDocument>['children'][number];
+const boundaries = new Set(['p', 'li', 'td', 'th', 'dt', 'dd', 'address', 'div', 'section', 'article', 'main', 'body', 'header', 'footer', 'table', 'tr', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const compact = (text: string) => text.replace(/\s+/g, ' ').trim();
+
+/** Keep block boundaries and scoped headings; never borrow a name from a sibling block. */
+export function pageBlocks(content: string, type: 'text/html' | 'text/plain' = 'text/html'): TextBlock[] {
+  if (type === 'text/plain') return content.split(/\n\s*\n/).map((text, index) => ({ text: compact(text),
+    heading_context: [], dom_path: `text[${index}]`, dom_order: index, authority: 'primary' as const })).filter(block => block.text);
+  const blocks: TextBlock[] = [];
+  function walk(nodes: Node[], path: string, headings: { level: number; text: string }[], secondary: boolean) {
+    let context = [...headings];
+    let text = '';
+    let segment = 0;
+    const flush = () => {
+      if (compact(text)) blocks.push({ text: compact(text), heading_context: context.map(heading => heading.text), dom_path: `${path}/text()[${segment++}]`,
+        dom_order: blocks.length, authority: secondary || context.some(heading => /\b(privacy|competition|promotion|giveaway|licens|copyright)/i.test(heading.text)) ? 'secondary' : 'primary' });
+      text = '';
+    };
+    const counts = new Map<string, number>();
+    for (const node of nodes) {
+      if (node.type === 'text') { text += node.data; continue; }
+      if (!('name' in node) || !('children' in node)) continue;
+      const name = node.name;
+      const attrs = node.attribs;
+      const count = (counts.get(name) ?? 0) + 1;
+      counts.set(name, count);
+      if (['script', 'style', 'noscript', 'template', 'nav', 'menu'].includes(name) || 'hidden' in attrs
+        || attrs['aria-hidden'] === 'true' || ['navigation', 'menu'].includes(attrs.role ?? '')) { flush(); continue; }
+      const childPath = `${path}/${name}[${count}]`;
+      if (name === 'br') { text += ' '; continue; }
+      const low = secondary || name === 'footer' || attrs.role === 'contentinfo';
+      if (boundaries.has(name) || low !== secondary) {
+        flush();
+        const start = blocks.length;
+        walk(node.children, childPath, context, low);
+        if (/^h[1-6]$/.test(name)) {
+          const heading = compact(blocks.slice(start).map(block => block.text).join(' '));
+          const level = Number(name[1]);
+          context = context.filter(item => item.level < level);
+          if (heading) context.push({ level, text: heading });
+        }
+      } else {
+        const hasBoundary = (children: Node[]): boolean => children.some(child => 'name' in child && 'children' in child
+          && (boundaries.has(child.name) || hasBoundary(child.children)));
+        if (hasBoundary(node.children)) { flush(); walk(node.children, childPath, context, low); continue; }
+        // Inline tags are transparent, while any nested semantic blocks still split.
+        const inline = (children: Node[]): string => children.map(child => {
+          if (child.type === 'text') return child.data;
+          if ('name' in child && 'children' in child) {
+            if (['script', 'style', 'template', 'noscript', 'nav'].includes(child.name)
+              || 'hidden' in child.attribs || child.attribs['aria-hidden'] === 'true') return ' ';
+            return inline(child.children);
+          }
+          return '';
+        }).join('');
+        text += inline(node.children);
+      }
+    }
+    flush();
+  }
+  walk(parseDocument(content).children, '', [], false);
+  return blocks;
+}
+export function pageText(content: string, type: 'text/html' | 'text/plain' = 'text/html'): string {
+  return pageBlocks(content, type).map(block => block.text).join('\n');
 }
 
-export function pageText(content: string, type: 'text/html' | 'text/plain' = 'text/html'): string {
-  if (type === 'text/plain') return content.replace(/\r/g, '').replace(/[^\S\n]+/g, ' ');
-  const parts: string[] = [];
-  let hiddenDepth = 0;
-  const blocks = new Set(['p', 'div', 'section', 'article', 'li', 'br', 'h1', 'h2', 'h3', 'td', 'tr']);
-  const parser = new Parser({
-    onopentag(name, attributes) {
-      if (hiddenDepth) hiddenDepth++;
-      else if (['script', 'style', 'noscript', 'template'].includes(name) || 'hidden' in attributes || attributes['aria-hidden'] === 'true') hiddenDepth = 1;
-      else if (blocks.has(name)) parts.push('\n');
-    },
-    ontext(text) { if (!hiddenDepth) parts.push(text); },
-    onclosetag(name) { if (hiddenDepth) hiddenDepth--; else if (blocks.has(name)) parts.push('\n'); },
-  }, { decodeEntities: true });
-  parser.end(content);
-  return parts.join('').replace(/\r/g, '').replace(/[^\S\n]+/g, ' ').replace(/\n+/g, '\n');
+function roleFor(beforeName: string, afterName: string, block: TextBlock): { role: CandidateRole; role_basis: CandidateOccurrence['role_basis'] } {
+  if (/\b(former|previous|formerly|no longer|not)\b/i.test(beforeName + afterName)) return { role: 'unknown', role_basis: 'unknown' };
+  const patterns: [CandidateRole, RegExp][] = [
+    ['seller', /(?:seller\s+(?:is|:)|(?:products|goods)\s+are\s+sold\s+by)\s*$/i],
+    ['site_operator', /(?:operated\s+by|site operator\s+(?:is|:))\s*$/i],
+    ['brand_operator', /(?:brand\s+is\s+operated\s+by|brand operator\s+(?:is|:))\s*$/i],
+    ['promoter', /(?:promoter\s+(?:is|:)|(?:programme|program)\s+is\s+offered\s+(?:at the sole discretion of|by))\s*$/i],
+    ['licensor', /licensor\s+(?:is|:)\s*$/i],
+    ['data_controller', /data controller\s+(?:is|:)\s*$/i],
+  ];
+  // Specific brand operation takes precedence over generic "operated by".
+  if (/brand\s+is\s+operated\s+by\s*$/i.test(beforeName)) return { role: 'brand_operator', role_basis: 'explicit' };
+  for (const [role, pattern] of patterns) if (pattern.test(beforeName)) return { role, role_basis: 'explicit' };
+  const post = afterName.match(/^\s*(?:\([^)]*\)\s*)?(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
+  if (post) return { role: post[1]!.toLowerCase().replaceAll(' ', '_') as CandidateRole, role_basis: 'explicit' };
+  // Registration identifies a company, not its role; only sale-specific section context can supply that role.
+  if (block.authority === 'primary' && block.heading_context.some(heading => /terms (?:(?:and|&) conditions )?of sale|sales terms|who you (?:buy|purchase) from/i.test(heading))
+    && /(?:is\s+(?:a\s+)?company\s+registered|registered|company\s+(?:registration\s+)?(?:number|no\.?))/i.test(afterName)) {
+    return { role: 'seller', role_basis: 'section_context' };
+  }
+  return { role: 'unknown', role_basis: 'unknown' };
 }
 
 export function extractCompanyCandidates(content: string, sourceUrl: string,
   type: 'text/html' | 'text/plain' = 'text/html'): ExtractedCandidate[] {
-  const text = pageText(content, type);
-  const label = /\b(?:company\s+(?:registration\s+)?(?:number|no\.?)|registered(?:\s+company)?\s+(?:number|no\.?)|registration\s+number|registered\s+in\s+(?:england(?:\s+and\s+wales)?|scotland|northern\s+ireland)\s+(?:under\s+)?(?:company\s+)?(?:number|no\.?))[\s:.,#()\[\]–—-]{0,24}(?:is\s+)?((?:[A-Z]{2}\s*)?\d{6,8})(?![\p{L}\p{N}])/giu;
   const candidates = new Map<string, ExtractedCandidate>();
-  for (const match of text.matchAll(label)) {
-    if (/(?:VAT|tax|charity|phone|telephone)\s*$/i.test(text.slice(Math.max(0, match.index - 30), match.index))) continue;
-    const number = normalizeCompanyNumber(match[1]!.replace(/\s+/g, ''))!;
-    if (!COMPANY_NUMBER_PATTERN.test(number)) continue;
-    const before = text.slice(Math.max(0, match.index - 240), match.index);
-    const namePattern = /\b[\p{Lu}\p{N}][\p{L}\p{M}\p{N}'’&().-]*(?:[ \t]+(?:[\p{Lu}\p{N}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}[ \t]+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu;
-    const names = [...before.matchAll(namePattern)];
-    const name = names.at(-1);
-    const possibleName = name?.[0].replace(/^(?:WE ARE|THE SELLER IS)\s+/, '') ?? null;
-    const beforeName = name ? before.slice(0, name.index).slice(-100) : '';
-    const explicit = /(?:(?:site|website|store|shop)\s+(?:is\s+)?(?:owned and )?operated\s+by|(?:products|goods)\s+are\s+sold\s+by|(?:seller|contracting entity)\s+(?:is|:))\s*$/i.test(beforeName);
-    const occurrence = {
-      source_snippet: text.slice(Math.max(0, match.index - 240), match.index + match[0].length + 100).replace(/\s+/g, ' ').trim(),
-      possible_legal_name: possibleName,
-      explicit_operator_or_seller: explicit,
-    };
-    const previous = candidates.get(number);
-    if (previous) previous.occurrences.push(occurrence);
-    else candidates.set(number, { company_number: number, source_url: sourceUrl, occurrences: [occurrence] });
+  for (const block of pageBlocks(content, type)) {
+    // Intl segmentation preserves abbreviations such as U.K. and Ltd. better than splitting on every dot.
+    const masked = block.text.replace(/\bno\.(?=\s*[(#:]*\s*(?:[A-Z]{2}\s*)?\d)/gi, value => value.slice(0, -1) + '_');
+    const sentences = [...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(masked)]
+      .map(item => block.text.slice(item.index, item.index + item.segment.length));
+    for (const sentence of sentences) {
+      const label = /\b(?:company\s+(?:registration\s+)?(?:number|no\.?)|registered(?:\s+company)?\s+(?:number|no\.?)|registration\s+number|registered\s+in\s+(?:england(?:\s+and\s+wales)?|scotland|northern\s+ireland)\s+(?:under\s+)?(?:company\s+)?(?:number|no\.?))[\s:.,#()\[\]–—-]{0,24}(?:is\s+)?((?:[A-Z]{2}\s*)?\d{6,8})(?![\p{L}\p{N}])/giu;
+      let previousEnd = 0;
+      for (const match of sentence.matchAll(label)) {
+        const before = sentence.slice(previousEnd, match.index);
+        previousEnd = match.index + match[0].length;
+        if (/(?:VAT|tax|charity|phone|telephone)\s*$/i.test(before)) continue;
+        const number = normalizeCompanyNumber(match[1]!.replace(/\s+/g, ''))!;
+        if (!COMPANY_NUMBER_PATTERN.test(number)) continue;
+        const namePattern = /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu;
+        const names = [...before.matchAll(namePattern)];
+        const name = names.at(-1);
+        const possibleName = name?.[0].replace(/^(?:(?:THE )?(?:SELLER|SITE OPERATOR|BRAND OPERATOR|PROMOTER|LICENSOR|DATA CONTROLLER) IS|WE ARE|COPYRIGHT)\s+/i, '') ?? null;
+        const beforeName = name ? before.slice(0, name.index + name[0].length - possibleName!.length) : '';
+        const afterName = name ? before.slice(name.index + name[0].length) + match[0] : '';
+        const inferred = possibleName ? roleFor(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
+        const occurrence: CandidateOccurrence = { source_snippet: sentence.trim(), possible_legal_name: possibleName,
+          ...inferred, block, explicit_operator_or_seller: isShoppingRole(inferred.role) && inferred.role_basis === 'explicit' };
+        const previous = candidates.get(number);
+        if (previous) previous.occurrences.push(occurrence);
+        else candidates.set(number, { company_number: number, source_url: sourceUrl, occurrences: [occurrence] });
+      }
+    }
   }
   return [...candidates.values()];
 }
