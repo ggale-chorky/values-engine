@@ -25,7 +25,7 @@ describe('same-document complementary evidence', () => {
   it('fuses the live-style Estée terms snippets, preserving originals and loyalty evidence', async () => {
     const fixture = JSON.parse(await read('estee-same-document.json')) as { seller_evidence: string; registration_evidence: string; source_url: string };
     const companiesHouse = registry();
-    const result = await resolveWithDiscovery(input, { fetchPage: page(await read('estee-lauder.html')), companiesHouse,
+    const result = await resolveWithDiscovery(input, { fetchPage: page(await read('estee-lauder.html')), fetchDiscoveredPage: blocked, companiesHouse,
       discover: async () => discovery([claim(fixture.seller_evidence), claim(fixture.registration_evidence)]) });
     expect(result.overall).toMatchObject({ recommended_action: 'PROPOSE', company_number: '00659213' });
     expect(result.selected_candidate).toMatchObject({ inferred_role: 'seller', same_document_evidence_fusion: true,
@@ -90,7 +90,7 @@ describe('same-document complementary evidence', () => {
     expect(result.selected_candidate?.same_document_evidence_fusion).toBe(true);
   });
   it('can link direct role evidence with discovered identity evidence from that exact document', async () => {
-    const result = await resolveWithDiscovery({ ...input, source_url: terms }, { fetchPage: page(`<p>${seller}</p>`, terms),
+    const result = await resolveWithDiscovery({ ...input, source_url: terms }, { fetchPage: page(`<p>${seller}</p>`, terms), fetchDiscoveredPage: blocked,
       companiesHouse: registry(), discover: async () => discovery([claim(identity)]) });
     expect(result.overall.recommended_action).toBe('PROPOSE');
     const occurrences = result.selected_candidate!.evidence_groups.flatMap(group => group.occurrences);
@@ -120,7 +120,7 @@ describe('real-path role parity and known answers', () => {
     for (const occurrence of occurrences) expect(occurrence).toMatchObject({ role: 'seller', role_basis: 'explicit', raw_identifier: null, source_snippet: text });
   });
   it('Charlotte embedded split fragments now produce overall PROPOSE', async () => {
-    const result = await resolveWithDiscovery({ ...input, brand_name: 'Charlotte Tilbury' }, { fetchPage: page(await read('charlotte-live-style-embedded.html')),
+    const result = await resolveWithDiscovery({ ...input, source_url: terms, brand_name: 'Charlotte Tilbury' }, { fetchPage: page(await read('charlotte-live-style-embedded.html'), terms),
       companiesHouse: { getCompanyProfile: vi.fn(async company_number => ({ company_number, company_name: 'CHARLOTTE TILBURY BEAUTY LIMITED', company_status: 'active' })) }, discover: vi.fn() });
     expect(result.overall).toMatchObject({ recommended_action: 'PROPOSE', company_number: '08037372' });
     expect(result.selected_candidate).toMatchObject({ inferred_role: 'seller', retrieval_channel: 'embedded_page_data', same_document_evidence_fusion: true });

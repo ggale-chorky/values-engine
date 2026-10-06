@@ -5,6 +5,7 @@ export function marketContextMismatch(text: string, sourceUrl: string, target: T
   try {
     const url = new URL(sourceUrl);
     if (/(?:^|\/)(?:us|en-us|ie|en-ie|sg|en-sg|au|en-au|ca|en-ca|fr|de)(?:\/|$)/i.test(url.pathname)
+      || /^(?:us|en-us|ie|sg|au|ca|fr|de)\./i.test(url.hostname)
       || /\.(?:ie|sg|au|ca|fr|de)$/.test(url.hostname)) return true;
   } catch { return true; }
   const foreign = '(?:United States|USA|U\\.S\\.A\\.?|Delaware|Ireland|Irish|Singapore|Australia|Canada|France|Germany)';

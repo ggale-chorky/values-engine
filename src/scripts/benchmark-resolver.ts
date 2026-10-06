@@ -20,7 +20,7 @@ export async function benchmarkMetadata(inputFile: string, contents: string): Pr
   const commit = (await exec('git', ['rev-parse', 'HEAD'])).stdout.trim();
   const dirty = (await exec('git', ['status', '--porcelain'])).stdout.trim().length > 0;
   return { benchmark_input_filename: inputFile, benchmark_input_sha256: sha256(contents), git_commit_sha: commit, git_dirty: dirty,
-    timestamp: new Date().toISOString(), resolver_target_market: 'GB', resolver_version: 'V2.3', resolver_source_sha256: hashes,
+    timestamp: new Date().toISOString(), resolver_target_market: 'GB', resolver_version: 'V2.4', evaluation_kind: sha256(contents) === 'd1eec88d92302263ef05ba5e2b425ae4df105aafa491c044357a954db1ed38d2' ? 'regression_comparison' : 'unclassified', resolver_source_sha256: hashes,
     openai_configuration: { model: discovery.match(/model:\s*'([^']+)'/)?.[1] ?? null,
       identifier: `sha256:${sha256(discovery)}`, allowed_domains: '[normalised input domain]',
       tool_choice: discovery.match(/tool_choice:\s*'([^']+)'/)?.[1] ?? null,

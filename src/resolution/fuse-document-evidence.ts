@@ -1,3 +1,4 @@
+import { sourcePriority } from './source-priority.js';
 import { firstPartyUrl } from './discover-first-party-evidence.js';
 import { evidenceContextMismatch, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, ExtractedCandidate } from './extract-company-candidates.js';
@@ -12,6 +13,7 @@ export function fuseDocumentEvidence(candidates: ExtractedCandidate[], namedEvid
   try { domain = context.domain ?? new URL(context.source_url).hostname; } catch { return candidates; }
   const document = (occurrence: CandidateOccurrence) => firstPartyUrl(occurrence.source_url, domain);
   const inScope = (occurrence: CandidateOccurrence) => document(occurrence) !== null && occurrence.block.authority === 'primary'
+    && !sourcePriority(occurrence.source_url, occurrence.block.heading_context).exclusion
     && !evidenceContextMismatch([occurrence.block.text, ...occurrence.block.heading_context].join('\n'), context.brand_name)
     && !marketContextMismatch([occurrence.block.text, ...occurrence.block.heading_context].join('\n'), occurrence.source_url, context.target_market ?? 'GB');
   const output = candidates.map(candidate => ({ ...candidate, occurrences: candidate.occurrences.map(occurrence => ({ ...occurrence })) }));

@@ -544,21 +544,28 @@ supply wording with a separate registration fragment. These are local regression
 fixtures, not fresh live captures. No relationships or graph records are written.
 
 
-### Frozen Resolver V2.3 blind benchmark
+### Beauty UK v1: frozen baseline and regression dataset
 
 The frozen input is `benchmarks/beauty-uk-v1.csv`: exactly the requested 20 brands,
 with only `brand_name,domain,target_market` (`GB`). The harness rejects extra
 columns/fields, URLs in the domain field, invalid markets and duplicate brands.
 No company identifiers, legal names, legal-page URLs or parent mappings are supplied.
 `benchmarks/resolver-v23-freeze.json` pins the dataset and existing resolver source
-hashes; a test fails if they change. Future tuning belongs to a new benchmark/version.
+hashes at checkpoint `043dcac7e7bc6db4db345faa98c2c76b10c02f74`. Tests verify those historical
+source blobs and the unchanged dataset; current V2.4 source hashes are recorded separately
+in each new run. The original manifest and saved baseline run are not overwritten.
+
+Beauty UK v1 is now a regression dataset, not a future blind benchmark. Its saved
+V2.3 distribution is **5 PROPOSE / 7 REVIEW / 5 UNRESOLVED / 3 ERROR**. A future
+authorised V2.4 run is a labelled regression comparison, not a new blind performance
+estimate. A fresh unseen Beauty UK v2 holdout is needed for the next unbiased measurement.
 
 The existing orchestration requires a source URL. The thin adapter in
 `src/benchmark/domain-entry.ts` derives only `https://<normalised-domain>/` and invokes
-the unchanged V2.3 resolver. It may obtain evidence from that homepage or fall back
+the current resolver. It may obtain evidence from that homepage or fall back
 to the existing domain-restricted discovery flow. It contains no brand-specific
-fallbacks or known legal-page links. All extraction, fusion, selection, confidence,
-role, market and verification logic stays frozen.
+fallbacks or known legal-page links. The historical V2.3 implementation remains
+recoverable from its checkpoint; V2.4 changes are described below.
 
 Validate without network access, environment loading or output writes:
 
@@ -586,8 +593,9 @@ Each run writes:
   Human `audit_outcome` values are CORRECT, INCORRECT or UNCLEAR; none are filled in.
 - `summary.json`: completed/planned totals; PROPOSE/REVIEW/UNRESOLVED/ERROR counts;
   propose/review/unresolved/error rates; input filename/hash; Git SHA/dirty state;
-  timestamp; GB target; V2.3 source hashes; and model/configuration identity read
-  safely from the frozen discovery implementation. Each completed brand is flushed
+  timestamp; GB target; current resolver version/source hashes; evaluation kind
+  (`regression_comparison` for the frozen Beauty UK v1 content); and model/configuration
+  identity read safely from the current discovery implementation. Each completed brand is flushed
   to disk; the summary marks whether the planned run finished.
 
 ERROR means a thrown execution failure, or an unresolved/review result affected by
@@ -602,5 +610,52 @@ written. The harness retains audit evidence rather than request/transport payloa
 
 Known frozen limitation: some Charlotte live embedded-page transactional occurrences
 were still classified `unknown` despite an equivalent regression fixture resolving
-as seller. This is documented without further tuning; V2.3 remains frozen for the
-blind unseen-brand benchmark. The harness and tests make no Supabase writes.
+as seller. This remains a historical limitation of the frozen V2.3 baseline;
+no claim is made that the corresponding live case has been fixed without rerunning it. The harness and tests make no Supabase writes.
+
+
+### Resolver V2.4
+
+UK-first resolution still defaults unspecified `target_market` to `GB`.
+Generic “we are” identity wording no longer establishes site operation. Site-operator
+claims require an explicit website/site/webshop/store object or an explicit site-operator
+role. Mobile-message, programme, competition, recruitment, app, tool and feature
+operation does not establish a shopping relationship. `service_operator` is diagnostic
+and cannot pass the shopping-role gate. Explicit “goods supplied from the Website
+are supplied by” identifies a seller. Existing exact-name matching and same-document
+fusion rules remain in force; registry/page-name disagreement requires REVIEW.
+
+Domain-restricted discovery prioritises authoritative legal URLs. Each attributable
+candidate URL is retrieved sequentially with the existing bounded, public-address-only
+HTTP client. Duplicate URLs are fetched once per discovery pass. The full visible and
+embedded document is extracted deterministically without executing scripts. Ordinary
+successful documents supersede model snippets, including documents with no company
+evidence. Blocked/unavailable or insufficient documents may use attributable search
+text as fallback; an embedded identifier recovered from a sparse shell still uses
+that document. Off-domain redirects are rejected. No access-control bypass is added.
+
+Occurrence provenance records `evidence_origin` as `discovered_url_direct` or
+`search_evidence_fallback`, plus the discovered URL and existing retrieval/extraction
+channels. `discovered_sources` records retrieval outcome and safe diagnostics; raw
+search candidates and the complete API source list remain available for audit.
+Model-provided name/number/role fields never substitute for deterministic extraction
+and Companies House verification.
+
+Heuristic source priority favours explicit UK and main-site legal/transactional pages.
+Careers/applicant, promotional/loyalty and recognised foreign-market sources are
+excluded from shopping selection and fusion, but retained as secondary evidence.
+Privacy-controller evidence cannot override a verified seller/site operator. Ranking
+orders retrieval and supporting citations; it never breaks a conflict between two
+verified relevant operating entities. The market/section vocabularies are conservative
+heuristics, not a complete taxonomy of international sites.
+
+A successful search with malformed JSON, missing fields or a schema mismatch receives
+one structured-output repair request using the same domain-restricted configuration.
+Safe `validation_errors` retain category, attempt and schema field paths, not response
+payloads or raw errors. A failed repair remains `discovery_invalid_response`, mapped
+to benchmark ERROR unless an independent PROPOSE already exists. There is at most
+one transient provider retry across the operation, so repair plus retry is bounded
+to three API requests. No ownership truth or graph relationships are written.
+
+The implementation is locally tested with mocked transports. Stop before the live
+Beauty UK v1 regression comparison; its V2.4 distribution is not yet measured.

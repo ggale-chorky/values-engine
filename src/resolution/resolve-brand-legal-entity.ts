@@ -1,3 +1,4 @@
+import { annotateSource } from './source-priority.js';
 import { fuseDocumentEvidence } from './fuse-document-evidence.js';
 import { normaliseLegalName } from './legal-name.js';
 export { normaliseLegalName } from './legal-name.js';
@@ -108,6 +109,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
   const brand = input.brand_name;
   const targetMarket = input.target_market ?? 'GB';
   for (const candidate of all) for (const occurrence of candidate.occurrences) {
+    annotateSource(occurrence);
     const context = [occurrence.block.text, ...occurrence.block.heading_context].join('\n');
     occurrence.context_mismatch = evidenceContextMismatch(context, brand);
     occurrence.market_context_mismatch = marketContextMismatch(context, occurrence.source_url, targetMarket);
@@ -117,7 +119,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     } catch { occurrence.source_validated = false; }
   }
   const inScope = (occurrence: CandidateOccurrence) => occurrence.source_validated && !occurrence.context_mismatch && !occurrence.market_context_mismatch;
-  const eligible = (occurrence: CandidateOccurrence) => inScope(occurrence) && occurrence.block.authority === 'primary';
+  const eligible = (occurrence: CandidateOccurrence) => inScope(occurrence) && !occurrence.source_exclusion && occurrence.block.authority === 'primary';
   const relevant = (candidate: ExtractedCandidate) => candidate.occurrences.filter(occurrence => eligible(occurrence) && isShoppingRole(occurrence.role));
   const consideredFor = (candidate: ExtractedCandidate) => relevant(candidate).length ? relevant(candidate) : candidate.occurrences.filter(eligible);
   // Check relevant target-market evidence first, while keeping all candidates in diagnostics.
@@ -150,7 +152,7 @@ export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: 
     base.company_number = candidate.company_number;
     const selected = relevant(candidate);
     const considered = consideredFor(candidate);
-    const supporting = ([...considered].sort((a, b) => Number(!!b.possible_legal_name) - Number(!!a.possible_legal_name))[0] ?? candidate.occurrences[0])!;
+    const supporting = ([...considered].sort((a, b) => Number(!!b.possible_legal_name) - Number(!!a.possible_legal_name) || (b.source_priority ?? 0) - (a.source_priority ?? 0))[0] ?? candidate.occurrences[0])!;
     base.source_snippet = supporting.source_snippet;
     base.source_url = supporting.source_url;
     base.retrieval_channel = supporting.retrieval_channel;

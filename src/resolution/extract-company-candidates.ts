@@ -3,7 +3,7 @@ import { parseDocument } from 'htmlparser2';
 import { normalizeCompanyNumber } from '../importers/gender-pay-gap.js';
 import { COMPANY_NUMBER_PATTERN } from './companies-house.js';
 
-export type CandidateRole = 'site_operator' | 'seller' | 'brand_operator' | 'promoter' | 'licensor' | 'data_controller' | 'unknown';
+export type CandidateRole = 'site_operator' | 'seller' | 'brand_operator' | 'promoter' | 'licensor' | 'data_controller' | 'service_operator' | 'unknown';
 export type ExtractionChannel = 'visible_dom' | 'structured_data' | 'embedded_page_state' | 'discovery_text';
 export type RetrievalChannel = 'direct_http' | 'embedded_page_data' | 'openai_web_search';
 export interface TextBlock {
@@ -14,6 +14,10 @@ export interface TextBlock {
   authority: 'primary' | 'secondary';
 }
 export interface CandidateOccurrence {
+  evidence_origin?: 'discovered_url_direct' | 'search_evidence_fallback';
+  discovered_url?: string;
+  source_priority?: number;
+  source_exclusion?: string;
   context_mismatch?: boolean;
   market_context_mismatch?: boolean;
   source_validated?: boolean;
@@ -130,20 +134,20 @@ export function classifyRole(beforeName: string, afterName: string, block: TextB
     return { role: 'seller', role_basis: 'explicit' };
   }
   const patterns: [CandidateRole, RegExp][] = [
-    ['seller', /(?:seller\s+(?:is|:)|(?:products|goods)\s+are\s+sold\s+by)\s*$/i],
-    ['site_operator', /(?:operated\s+by|site operator\s+(?:is|:))\s*$/i],
+    ['seller', /(?:seller\s+(?:is|:)|(?:products|goods)(?:\s+supplied\s+from\s+(?:the|this)\s+(?:website|site|webshop|store))?\s+are\s+(?:sold|supplied)\s+by)\s*$/i],
+    ['site_operator', /(?:(?:^|[.!?;:]\s*)(?:(?:the|this|our)\s+)?(?:website|site|webshop|store)\s+(?:(?:is|are)\s+)?(?:owned\s+and\s+)?operated\s+by|site operator\s+(?:is|:))\s*$/i],
     ['brand_operator', /(?:brand\s+is\s+operated\s+by|brand operator\s+(?:is|:))\s*$/i],
     ['promoter', /(?:promoter\s+(?:is|:)|(?:programme|program)\s+is\s+offered\s+(?:at the sole discretion of|by))\s*$/i],
     ['licensor', /licensor\s+(?:is|:)\s*$/i],
     ['data_controller', /data controller\s+(?:is|:)\s*$/i],
   ];
-  // Specific brand operation takes precedence over generic "operated by".
+  // Brand operation is a distinct explicitly named relationship.
   if (/brand\s+is\s+operated\s+by\s*$/i.test(beforeName)) return { role: 'brand_operator', role_basis: 'explicit' };
   for (const [role, pattern] of patterns) if (pattern.test(beforeName)) return { role, role_basis: 'explicit' };
-  if (/we\s+are\s*$/i.test(beforeName)) return { role: 'site_operator', role_basis: 'explicit' };
+  if (/\b(?:service|programme|program|competition|process|app|tool|feature)\s+(?:is\s+)?(?:owned\s+and\s+)?operated\s+by\s*$/i.test(beforeName)) return { role: 'service_operator', role_basis: 'explicit' };
   // Parenthetical registry/address details may intervene before the predicate.
   const predicate = afterName.replace(/\([^)]*\)/g, ' ').replace(/^\s*,?\s*registered\b[^;]*?,\s*(?=(?:is|acts as|operates)\b)/i, ' ');
-  if (/^\s*,?\s*operates\s+(?:the|this)\s+(?:web)?site\b/i.test(predicate)) return { role: 'site_operator', role_basis: 'explicit' };
+  if (/^\s*,?\s*operates\s+(?:the|this)\s+(?:website|site|webshop|store)(?=\s*(?:[.,;!?)]|$))/i.test(predicate)) return { role: 'site_operator', role_basis: 'explicit' };
   const post = predicate.match(/^\s*,?\s*(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
   if (post) return { role: post[1]!.toLowerCase().replaceAll(' ', '_') as CandidateRole, role_basis: 'explicit' };
   // Registry/address clauses can be long. Inspect the entire company-bound block,

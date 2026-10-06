@@ -90,7 +90,7 @@ describe('discovery orchestration', () => {
   it.each(['', '<p>' + 'General customer help. '.repeat(12) + '</p>', '<script>' + 'x'.repeat(814_000) + '</script><p>' + 'A'.repeat(1494) + '</p>'])
     ('falls back for a shell, no evidence or incomplete content', async html => {
       const discover = vi.fn(async () => discovery());
-      const result = await resolveWithDiscovery(input, { fetchPage: page(html), companiesHouse: profile(), discover });
+      const result = await resolveWithDiscovery(input, { fetchPage: page(html), fetchDiscoveredPage: blocked, companiesHouse: profile(), discover });
       expect(discover).toHaveBeenCalledOnce();
       expect(result.proposals[0]?.recommended_action).toBe('PROPOSE');
     });

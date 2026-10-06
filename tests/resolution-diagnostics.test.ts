@@ -25,10 +25,10 @@ describe('explicit grammatical roles', () => {
     ['The site is operated by Alpha Limited, company number 00123456.', 'site_operator'],
     ['The seller is Alpha Limited, company number 00123456.', 'seller'],
     ['The promoter is Alpha Limited, company number 00123456.', 'promoter'],
-    ['We are Alpha Limited, company number 00123456.', 'site_operator'],
+    ['We are Alpha Limited, company number 00123456.', 'unknown'],
   ])('%s infers %s in the supporting sentence', (text, role) => {
     expect(extractCompanyCandidates(`<p>${text}</p>`, url)[0]?.occurrences[0]).toMatchObject({
-      possible_legal_name: 'Alpha Limited', role, role_basis: 'explicit', source_snippet: text,
+      possible_legal_name: 'Alpha Limited', role, role_basis: role === 'unknown' ? 'unknown' : 'explicit', source_snippet: text,
     });
   });
 

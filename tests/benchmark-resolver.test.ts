@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveDomain } from '../src/benchmark/domain-entry.js';
 import { AUDIT_COLUMNS, parseBenchmarkCsv, runBenchmark } from '../src/benchmark/run-benchmark.js';
 import type { RunMetadata } from '../src/benchmark/run-benchmark.js';
-import { main } from '../src/scripts/benchmark-resolver.js';
+import { benchmarkMetadata, main } from '../src/scripts/benchmark-resolver.js';
 import { unresolved } from '../src/resolution/resolve-brand-legal-entity.js';
 import type { ResolverResult } from '../src/resolution/resolve-with-discovery.js';
 
@@ -48,7 +49,11 @@ describe('blind benchmark inputs and frozen snapshot', () => {
     expect(rows.every(row => Object.keys(row).join(',') === 'brand_name,domain,target_market' && row.target_market === 'GB')).toBe(true);
     expect(rows[0]?.brand_name).toBe('Trinny London'); expect(rows[19]?.brand_name).toBe('ESPA');
     expect(createHash('sha256').update(csv).digest('hex')).toBe(manifest.benchmark_input_sha256);
-    for (const [path, digest] of Object.entries(manifest.files)) expect(createHash('sha256').update(await readFile(path)).digest('hex')).toBe(digest);
+    for (const [path, digest] of Object.entries(manifest.files)) expect(createHash('sha256').update(execFileSync('git', ['show', `043dcac7e7bc6db4db345faa98c2c76b10c02f74:${path}`])).digest('hex')).toBe(digest);
+  });
+  it('labels reuse of Beauty UK v1 as a V2.4 regression comparison', async () => {
+    const file = 'benchmarks/beauty-uk-v1.csv';
+    expect(await benchmarkMetadata(file, await readFile(file, 'utf8'))).toMatchObject({ resolver_version: 'V2.4', evaluation_kind: 'regression_comparison' });
   });
   it('domain adapter derives only the homepage and invokes frozen discovery', async () => {
     const fetchPage = vi.fn(async (url: string) => ({ ok: false as const, status: 'source_unavailable' as const, source_url: url, reason: 'blocked' as const, http_status: 403 }));
@@ -98,14 +103,14 @@ describe('sequential benchmark outputs', () => {
     for (const row of audit) for (const field of AUDIT_COLUMNS) expect(row[field]).toBe('');
     expect(JSON.parse(await readFile(join(directory, 'summary.json'), 'utf8'))).toMatchObject({ completed: true, planned_brands: 4 });
   });
-  it('reports handled provider errors as ERROR, retaining the original resolver result', async () => {
+  it.each(['api_error', 'invalid_response'] as const)('reports %s as ERROR, retaining the original resolver result', async status => {
     const directory = await output(); const resolved = result('UNRESOLVED');
-    resolved.discovery = { status: 'api_error', candidates: [], sources: [], error: { http_status: 429, type: 'rate_limit_error', code: 'rate_limit_exceeded', retryable: true } };
+    resolved.discovery = { status, candidates: [], sources: [], error: { http_status: 429, type: 'rate_limit_error', code: 'rate_limit_exceeded', retryable: true } };
     const summary = await runBenchmark([input], { output: directory, metadata, resolve: async () => resolved });
     expect(summary.ERROR).toBe(1); expect(summary.UNRESOLVED).toBe(0);
     const record = JSON.parse(await readFile(join(directory, 'results.jsonl'), 'utf8'));
     expect(record.resolver_result.overall.recommended_action).toBe('UNRESOLVED');
-    expect(record.error).toBe('discovery_api_error');
+    expect(record.error).toBe(`discovery_${status}`);
   });
   it('does not erase an independent PROPOSE because secondary evidence had a provider failure', async () => {
     const resolved = result('PROPOSE'); resolved.proposals[0]!.signals.push({ code: 'companies_house_network_error', weight: 0, detail: null });

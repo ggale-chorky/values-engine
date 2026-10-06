@@ -127,7 +127,7 @@ describe('known answers and channel parity', () => {
   it('Estée UK transactional discovery supersedes loyalty evidence with canonical identifier', async () => {
     const companiesHouse = { getCompanyProfile: vi.fn(async company_number => ({ company_number, company_name: 'ESTEE LAUDER COSMETICS LIMITED', company_status: 'active' })) };
     const text = 'This site is operated by Estée Lauder Cosmetics Limited, registered in England and Wales under company number 659213.';
-    const result = await resolveWithDiscovery({ ...input, brand_name: 'Estée Lauder' }, { fetchPage: page(await read('estee-lauder.html')), companiesHouse, discover: async () => discovery([claim(text)]) });
+    const result = await resolveWithDiscovery({ ...input, brand_name: 'Estée Lauder' }, { fetchPage: page(await read('estee-lauder.html')), fetchDiscoveredPage: blocked, companiesHouse, discover: async () => discovery([claim(text)]) });
     expect(result.overall).toMatchObject({ recommended_action: 'PROPOSE', company_number: '00659213' });
     expect(result.selected_candidate).toMatchObject({ inferred_role: 'site_operator', retrieval_channel: 'openai_web_search' });
     expect(result.selected_candidate?.evidence_groups.some(group => group.role === 'promoter' && !group.considered)).toBe(true);
