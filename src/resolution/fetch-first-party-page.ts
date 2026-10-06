@@ -6,7 +6,7 @@ import { RESOLVER_USER_AGENT } from './companies-house.js';
 import { parseDocument } from 'htmlparser2';
 import { extractCompanyCandidates, pageText } from './extract-company-candidates.js';
 
-export type FetchOutcome = 'success' | 'blocked' | 'empty_or_shell' | 'unsupported_content' | 'network_error' | 'http_error';
+export type FetchOutcome = 'success' | 'blocked' | 'empty_or_shell' | 'retrieved_content_incomplete' | 'unsupported_content' | 'network_error' | 'http_error';
 export interface RetrievalDiagnostics {
   requested_url: string;
   final_url: string | null;
@@ -17,6 +17,7 @@ export interface RetrievalDiagnostics {
   html_title: string | null;
   contains_company_number_pattern: boolean | null;
   outcome: FetchOutcome;
+  content_heuristic?: 'low_visible_text' | 'large_html_low_text_ratio' | null;
 }
 // Query values, fragments and URL credentials do not belong in diagnostics.
 function safeUrl(value: string): string {
@@ -36,8 +37,13 @@ export function contentDiagnostics(content: string, type: 'text/html' | 'text/pl
     visit(parseDocument(content).children);
   }
   const contains = extractCompanyCandidates(content, '', type).length > 0;
+  const bytes = Buffer.byteLength(content);
+  const sparse = type === 'text/html' && bytes >= 250_000 && visible.length < 5_000 && visible.length / bytes < 0.01;
   return { visible_text_character_count: visible.length, html_title: title, contains_company_number_pattern: contains,
-    outcome: !contains && visible.length < 100 ? 'empty_or_shell' as const : 'success' as const };
+    ...(!contains && sparse ? { content_heuristic: 'large_html_low_text_ratio' as const } : {}),
+    ...(!contains && !sparse && visible.length < 100 ? { content_heuristic: 'low_visible_text' as const } : {}),
+    outcome: !contains && sparse ? 'retrieved_content_incomplete' as const
+      : !contains && visible.length < 100 ? 'empty_or_shell' as const : 'success' as const };
 }
 
 const MAX_BYTES = 2_000_000;

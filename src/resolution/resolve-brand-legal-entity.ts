@@ -3,10 +3,11 @@ import type { CompaniesHouseLookup, CompanyProfile } from './companies-house.js'
 import { extractCompanyCandidates, isShoppingRole } from './extract-company-candidates.js';
 import type { CandidateOccurrence, CandidateRole, ExtractedCandidate } from './extract-company-candidates.js';
 import { contentDiagnostics, fetchFirstPartyPage } from './fetch-first-party-page.js';
+import { inspectEmbeddedEvidence, mergeCandidates } from './extract-embedded-evidence.js';
 import type { PageResult, RetrievalDiagnostics } from './fetch-first-party-page.js';
 
 export type ResolutionReason = 'source_blocked' | 'source_unavailable' | 'insufficient_visible_text' | 'no_company_evidence'
-  | 'relationship_role_inadequate' | 'company_verification_failed' | 'conflicting_company_evidence'
+  | 'retrieved_content_incomplete' | 'relationship_role_inadequate' | 'company_verification_failed' | 'conflicting_company_evidence'
   | 'incomplete_verification' | 'company_inactive' | 'legal_name_unavailable' | 'verified_operating_entity';
 
 export interface Signal { code: string; weight: number; detail: string | number | boolean | null }
@@ -19,6 +20,7 @@ export interface EvidenceGroup {
   occurrences: CandidateOccurrence[];
 }
 export interface Proposal {
+  retrieval_channel: import('./extract-company-candidates.js').RetrievalChannel;
   reason: ResolutionReason;
   retrieval_diagnostics: RetrievalDiagnostics | null;
   brand_name: string;
@@ -44,8 +46,8 @@ export function normaliseLegalName(value: string): string {
     .replace(/\bLTD\b/g, 'LIMITED').replace(/&/g, 'AND').replace(/[^A-Z0-9]/g, '');
 }
 
-function unresolved(brand: string, source: string, code: string, detail: Signal['detail'] = null): Proposal {
-  return { reason: 'source_unavailable', retrieval_diagnostics: null,
+export function unresolved(brand: string, source: string, code: string, detail: Signal['detail'] = null): Proposal {
+  return { retrieval_channel: 'direct_http', reason: 'source_unavailable', retrieval_diagnostics: null,
     brand_name: brand, candidate_legal_entity_name: null, company_number: null, company_status: null,
     source_url: source, source_snippet: null, extracted_names: [], inferred_role: 'unknown', companies_house_match: null,
     evidence_groups: [], conflicting_evidence: [], signals: [{ code, weight: 0, detail }],
@@ -64,22 +66,38 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
     result.retrieval_diagnostics = page.diagnostics ?? null;
     return [result];
   }
-  const all = extractCompanyCandidates(page.content, page.final_url, page.content_type);
+  const embedded = page.content_type === 'text/html' ? inspectEmbeddedEvidence(page.content, page.final_url) : { candidates: [], incomplete: false };
+  const all = mergeCandidates([...extractCompanyCandidates(page.content, page.final_url, page.content_type), ...embedded.candidates]);
   if (!all.length) {
     const result = unresolved(brand, page.final_url, 'no_company_number');
-    result.reason = (page.diagnostics ?? contentDiagnostics(page.content, page.content_type)).outcome === 'empty_or_shell'
-      ? 'insufficient_visible_text' : 'no_company_evidence';
+    const outcome = (page.diagnostics ?? contentDiagnostics(page.content, page.content_type)).outcome;
+    result.reason = outcome === 'retrieved_content_incomplete' ? 'retrieved_content_incomplete'
+      : outcome === 'empty_or_shell' ? 'insufficient_visible_text' : 'no_company_evidence';
     result.retrieval_diagnostics = page.diagnostics ?? null;
     return [result];
   }
-  // Explicit bound on API calls per page. Never search for a brand as a fallback.
+  const proposals = await verifyCandidateEvidence(all, input, dependencies.companiesHouse, page.diagnostics ?? null);
+  if (embedded.incomplete) for (const proposal of proposals) {
+    proposal.signals.push({ code: 'embedded_inspection_incomplete', weight: 0, detail: 'JSON parse or inspection limit' });
+    if (proposal.retrieval_channel === 'embedded_page_data' && proposal.recommended_action === 'PROPOSE') {
+      proposal.recommended_action = 'REVIEW'; proposal.reason = 'incomplete_verification';
+    }
+  }
+  return proposals;
+}
+
+/** Shared deterministic verification for direct, embedded and discovered evidence. */
+export async function verifyCandidateEvidence(all: ExtractedCandidate[], input: { brand_name: string },
+  companiesHouse: CompaniesHouseLookup, diagnostics: RetrievalDiagnostics | null = null): Promise<Proposal[]> {
+  const brand = input.brand_name;
+  // Explicit bound on verification calls across all evidence channels.
   const candidates = all.slice(0, 10);
   const checked: { candidate: ExtractedCandidate; profile: CompanyProfile | null; failure: string | null }[] = [];
   let halted: string | null = null;
   for (const candidate of candidates) {
     if (halted) { checked.push({ candidate, profile: null, failure: halted }); continue; }
     try {
-      const profile = await dependencies.companiesHouse.getCompanyProfile(candidate.company_number);
+      const profile = await companiesHouse.getCompanyProfile(candidate.company_number);
       if (profile.company_number !== candidate.company_number) throw new CompaniesHouseError('invalid_response');
       checked.push({ candidate, profile, failure: null });
     } catch (error) {
@@ -94,18 +112,21 @@ export async function resolveBrandLegalEntity(input: { brand_name: string; sourc
   const operators = all.filter(candidate => relevant(candidate).length > 0);
   return checked.map(({ candidate, profile, failure }) => {
     const base = unresolved(brand, candidate.source_url, 'labelled_company_number', candidate.company_number);
-    base.retrieval_diagnostics = page.diagnostics ?? null;
+    base.retrieval_diagnostics = diagnostics;
     base.company_number = candidate.company_number;
     const selected = relevant(candidate);
     const considered = selected.length ? selected : candidate.occurrences.filter(occurrence => occurrence.block.authority === 'primary');
-    base.source_snippet = (considered[0] ?? candidate.occurrences[0])!.source_snippet;
+    const supporting = (considered[0] ?? candidate.occurrences[0])!;
+    base.source_snippet = supporting.source_snippet;
+    base.source_url = supporting.source_url;
+    base.retrieval_channel = supporting.retrieval_channel;
     base.extracted_names = [...new Set(candidate.occurrences.flatMap(item => item.possible_legal_name ? [item.possible_legal_name] : []))];
     base.inferred_role = (considered[0] ?? candidate.occurrences[0])!.role;
     for (const occurrence of candidate.occurrences) {
       const key = JSON.stringify([occurrence.possible_legal_name && normaliseLegalName(occurrence.possible_legal_name),
-        occurrence.role, occurrence.block.heading_context, occurrence.block.authority]);
+        occurrence.role, occurrence.block.heading_context, occurrence.block.authority, occurrence.source_url, occurrence.extraction_channel, occurrence.retrieval_channel]);
       let group = base.evidence_groups.find(item => JSON.stringify([item.extracted_legal_name && normaliseLegalName(item.extracted_legal_name),
-        item.role, item.section_context, item.occurrences[0]!.block.authority]) === key);
+        item.role, item.section_context, item.occurrences[0]!.block.authority, item.occurrences[0]!.source_url, item.occurrences[0]!.extraction_channel, item.occurrences[0]!.retrieval_channel]) === key);
       if (!group) {
         group = { company_number: candidate.company_number, extracted_legal_name: occurrence.possible_legal_name,
           role: occurrence.role, section_context: occurrence.block.heading_context, considered: considered.includes(occurrence), occurrences: [] };

@@ -270,10 +270,12 @@ in `src/demo/catalog.ts`. It needs `COMPANIES_HOUSE_API_KEY` in the environment
 tests use representative local HTML snippets and mocked API responses, never
 real credentials, websites or Companies House requests.
 
-The pipeline is: supplied legal-page URL → ordinary HTTP(S) fetch → visible text
-and labelled company-number extraction → direct Companies House profile lookup →
-deterministic proposal. There is no discovery crawl, browser automation, LLM,
-Supabase access, relationship creation or automatic verification-state change.
+The demo pipeline is: supplied legal-page URL → ordinary HTTP(S) fetch → visible
+DOM and embedded JSON extraction → Companies House verification. If retrieval is
+blocked/incomplete or supplies no usable shopping evidence, domain-restricted
+OpenAI web discovery supplies candidate snippets for the same deterministic verifier.
+There is no browser automation, Supabase access, relationship creation or automatic
+verification-state change.
 The caller supplies the first-party URL; V1 does not independently establish
 that the domain belongs to the named brand. A proposal is not proof of ownership.
 
@@ -300,8 +302,8 @@ blocking, recognised challenge pages and login walls produce `source_unavailable
 there is no CAPTCHA, login or bot-protection bypass. Challenge detection is
 conservative and cannot recognise every possible interstitial.
 
-HTML parsing uses `htmlparser2`, decodes character entities and ignores scripts,
-styles, templates, comments, navigation/menus and explicitly hidden nodes. V1 only extracts numbers
+Visible HTML parsing uses `htmlparser2`, decodes character entities and ignores scripts,
+styles, templates, comments, navigation/menus and explicitly hidden nodes. Extraction uses numbers
 beside labels such as `company number`, `company no.`, `registered number` and
 `registered in England and Wales under number`. VAT/charity labels and unrelated
 numeric strings are excluded. Numbers stay strings and reuse importer trimming/
@@ -312,7 +314,9 @@ Other registry formats remain unsupported in V1.
 Each occurrence retains its complete semantic text block, exact supporting
 sentence, scoped heading context, DOM path/order and inferred role. Paragraphs,
 headings, list items and table cells stay separate. Names are associated within
-the same sentence, never borrowed from an adjacent block/cell. Footer and
+the same sentence; a uniquely named company and identifier can also bind an explicit
+postfix role across registration/address text in the same block. Names are never
+borrowed from an adjacent block/cell. Footer and
 promotion/privacy/licensing sections are secondary evidence. Legal-name extraction
 is conservative, expecting title-case or uppercase
 names ending in Limited/Ltd/PLC/LLP. All-lowercase or unusual names can require
@@ -348,10 +352,14 @@ Retrieval diagnostics report requested/final URLs (without credentials, query or
 fragment), HTTP status, content type, bytes read from the final response, extracted
 visible-text length, HTML title (at most 200 characters), and whether a labelled
 company-number pattern was found. They contain no response body or headers.
-Outcomes are `success`, `blocked`, `empty_or_shell`, `unsupported_content`,
+Outcomes are `success`, `blocked`, `empty_or_shell`, `retrieved_content_incomplete`, `unsupported_content`,
 `network_error` or `http_error`. An unread body has zero bytes read and null text
 diagnostics. Fewer than 100 extracted visible characters without a company number
 is a conservative `empty_or_shell` heuristic, not proof that JavaScript is required.
+HTML of at least 250 KB with fewer than 5,000 visible characters, a text/byte ratio
+below 1%, and no visible company number is `retrieved_content_incomplete`. The
+`content_heuristic` field labels this rule; it is not a calibrated completeness test.
+Embedded evidence can still recover a usable candidate from such a response.
 
 Each proposal has a machine-readable `reason`: retrieval failures use
 `source_blocked` / `source_unavailable`; successfully fetched pages without evidence
@@ -388,3 +396,45 @@ failures prevent PROPOSE. Repeated numbers are looked up once but retain all
 occurrences. A 401/429/missing key stops further API calls for that page. The CLI
 reports failures per brand and continues through the remaining configured URLs.
 No schema change is needed; migrations 0001 and 0002 remain unchanged.
+
+
+### Resolver V2 discovery and provenance
+
+`resolveWithDiscovery` orchestrates the demo; `resolveBrandLegalEntity` remains the
+standalone deterministic HTTP/embedded resolver. It inspects JSON-LD, JSON script
+payloads and `__NEXT_DATA__` without executing JavaScript. String values (including
+HTML strings) use the same extractor. Explicit legal-name/company-number fields
+within one JSON object can identify a candidate but do not establish its role.
+Unrelated JSON values are never concatenated. JSON paths and extraction channels
+(`visible_dom`, `structured_data`, `embedded_page_state`, or `discovery_text`) stay
+on each occurrence. Malformed/oversized/deep JSON is skipped and incomplete embedded
+inspection cannot produce an embedded PROPOSE. Executable application-state
+assignments and streaming JavaScript payloads are deliberately unsupported.
+
+The official `openai` SDK reads `OPENAI_API_KEY` only when discovery is needed.
+Set it locally to enable the fallback; the example file contains only a blank
+placeholder. Missing keys/API failures retain the direct result and a structured
+attempt status. The service makes one Responses request using `gpt-5.5`,
+`web_search`, `filters.allowed_domains`, and `include: ["web_search_call.action.sources"]`,
+with a 45-second timeout, no retries, no SDK logging, `store: false` and an output
+limit. The supplied domain (including its subdomains) is the only search scope;
+there is no broader-domain retry. See the [official OpenAI web-search guide](https://developers.openai.com/api/docs/guides/tools-web-search).
+
+Structured output is validated with Zod. The full API web-search source list is
+retained, along with rejected-candidate reasons. Candidates must have an HTTP(S)
+first-party URL, a matching source-domain field and a matching URL in that source
+list. The model's separate name/number/role fields are diagnostic suggestions;
+only deterministic extraction from its attributed evidence text enters Companies
+House verification. No legal-name-only fuzzy lookup is implemented: name-only
+claims require REVIEW. API/source-list/schema failures fail closed.
+
+Each proposal and occurrence records `direct_http`, `embedded_page_data`, or
+`openai_web_search`. PROPOSE requires an extracted company number, official active
+Companies House profile, matching legal name, shopping role and no relevant
+conflicts/incomplete verification. Search claims without verification remain
+REVIEW; invalid/unattributed sources do not become candidates. Search text can be
+stale or inaccurate, and Companies House confirms company identity rather than
+ownership of a brand. Even PROPOSE is only a reviewable proposal, never a graph
+fact. The demo prints channel attempts, recommendations and complete provenance.
+All discovery tests mock both OpenAI and Companies House; do not run `resolve:demo`
+unless live external calls are intended.

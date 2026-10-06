@@ -3,6 +3,8 @@ import { normalizeCompanyNumber } from '../importers/gender-pay-gap.js';
 import { COMPANY_NUMBER_PATTERN } from './companies-house.js';
 
 export type CandidateRole = 'site_operator' | 'seller' | 'brand_operator' | 'promoter' | 'licensor' | 'data_controller' | 'unknown';
+export type ExtractionChannel = 'visible_dom' | 'structured_data' | 'embedded_page_state' | 'discovery_text';
+export type RetrievalChannel = 'direct_http' | 'embedded_page_data' | 'openai_web_search';
 export interface TextBlock {
   text: string;
   heading_context: string[];
@@ -11,6 +13,9 @@ export interface TextBlock {
   authority: 'primary' | 'secondary';
 }
 export interface CandidateOccurrence {
+  source_url: string;
+  extraction_channel: ExtractionChannel;
+  retrieval_channel: RetrievalChannel;
   source_snippet: string;
   possible_legal_name: string | null;
   role: CandidateRole;
@@ -107,6 +112,16 @@ function roleFor(beforeName: string, afterName: string, block: TextBlock): { rol
   if (/^\s*,?\s*operates\s+(?:the|this)\s+(?:web)?site\b/i.test(predicate)) return { role: 'site_operator', role_basis: 'explicit' };
   const post = predicate.match(/^\s*,?\s*(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
   if (post) return { role: post[1]!.toLowerCase().replaceAll(' ', '_') as CandidateRole, role_basis: 'explicit' };
+  // Registry/address clauses can be long. Inspect the entire company-bound block,
+  // but do not transfer a predicate past another company or a new sentence/subject.
+  const distant = afterName.match(/\b(?:is|acts as)\s+(?:the\s+)?(seller|site operator|brand operator|promoter|licensor|data controller)\b/i);
+  if (distant) {
+    const intervening = afterName.slice(0, distant.index);
+    if (/\b(company\s+(?:number|no)|registered|registration)\b/i.test(intervening)
+      && !/\b(limited|ltd|plc|llp|while|whereas|but|they|he|she)\b|[.!?]\s+[A-Z]/i.test(intervening.replace(/\([^)]*\)/g, ' '))) {
+      return { role: distant[1]!.toLowerCase().replaceAll(' ', '_') as CandidateRole, role_basis: 'explicit' };
+    }
+  }
   // Registration identifies a company, not its role; only sale-specific section context can supply that role.
   if (block.authority === 'primary' && block.heading_context.some(heading => /terms (?:(?:and|&) conditions )?of sale|sales terms|who you (?:buy|purchase) from/i.test(heading))
     && /(?:is\s+(?:a\s+)?company\s+registered|registered|company\s+(?:registration\s+)?(?:number|no\.?))/i.test(afterName)) {
@@ -134,12 +149,32 @@ export function extractCompanyCandidates(content: string, sourceUrl: string,
         if (!COMPANY_NUMBER_PATTERN.test(number)) continue;
         const namePattern = /\b[\p{Lu}][\p{L}\p{M}\p{N}'’&().-]*(?:\s+(?:[\p{Lu}(][\p{L}\p{M}\p{N}'’&().-]*|and|of|the|&)){0,18}\s+(?:LIMITED|Limited|LTD|Ltd|PLC|plc|LLP|llp)\b/gu;
         const names = [...before.matchAll(namePattern)];
-        const name = names.at(-1);
+        const blockNames = [...block.text.matchAll(namePattern)];
+        const blockNumbers = [...block.text.matchAll(label)];
+        const blockNumber = blockNumbers[0];
+        const postfix = blockNumber ? block.text.slice(blockNumber.index + blockNumber[0].length).replace(/^\s*\)\s*/, '') : '';
+        const boundPostfix = blockNames.length === 1 && blockNumbers.length === 1
+          && /^\s*,?\s*(?:is\s+(?:the\s+)?(?:promoter|seller|site operator|brand operator|licensor|data controller)|operates\s+(?:the|this)\s+(?:web)?site)\b/i.test(postfix);
+        const localName = names.at(-1);
+        const name = localName ?? (boundPostfix && blockNames[0]!.index < blockNumber!.index ? blockNames[0] : undefined);
         const possibleName = name?.[0].replace(/^(?:(?:THE )?(?:SELLER|SITE OPERATOR|BRAND OPERATOR|PROMOTER|LICENSOR|DATA CONTROLLER) IS|WE ARE|COPYRIGHT)\s+/i, '') ?? null;
-        const beforeName = name ? before.slice(0, name.index + name[0].length - possibleName!.length) : '';
-        const afterName = name ? sentence.slice(match.index - before.length + name.index + name[0].length) : '';
-        const inferred = possibleName ? roleFor(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
-        const occurrence: CandidateOccurrence = { source_snippet: sentence.trim(), possible_legal_name: possibleName,
+        const nameContext = localName ? before : block.text;
+        const beforeName = name ? nameContext.slice(0, name.index + name[0].length - possibleName!.length) : '';
+        const afterName = name ? localName
+          ? sentence.slice(match.index - before.length + name.index + name[0].length)
+          : block.text.slice(name.index + name[0].length) : '';
+        let inferred = possibleName ? roleFor(beforeName, afterName, block) : { role: 'unknown' as const, role_basis: 'unknown' as const };
+        if (possibleName && inferred.role === 'unknown' && boundPostfix
+          && !/\b(former|previous|formerly|no longer|not)\b/i.test(block.text)) inferred = roleFor('', postfix, block);
+        // A single named company/identifier in a block can have registry details
+        // spanning sentence segmentation. Never borrow from another named entity.
+        if (possibleName && inferred.role === 'unknown' && [...block.text.matchAll(namePattern)].length === 1
+          && [...block.text.matchAll(label)].length === 1) {
+          const offset = block.text.indexOf(possibleName);
+          inferred = roleFor(block.text.slice(0, offset), block.text.slice(offset + possibleName.length), block);
+        }
+        const occurrence: CandidateOccurrence = { source_url: sourceUrl, extraction_channel: 'visible_dom', retrieval_channel: 'direct_http',
+          source_snippet: boundPostfix ? block.text : sentence.trim(), possible_legal_name: possibleName,
           ...inferred, block, explicit_operator_or_seller: isShoppingRole(inferred.role) && inferred.role_basis === 'explicit' };
         const previous = candidates.get(number);
         if (previous) previous.occurrences.push(occurrence);
