@@ -866,3 +866,33 @@ and `last_verified_at`. Missing company numbers or dates remain null. An empty r
 prints no rows. It makes no writes or approval calls and does not rerun the resolver.
 The listing filters verification status only; it does not imply current date validity
 or reinterpret a relationship's role. It uses the existing server environment configuration.
+
+### Read-only brand policy evaluation
+
+```sh
+npm run policy:evaluate-brand -- --brand "<exact canonical brand name>"
+```
+
+Uses the existing demo rule `uk_median_gender_pay_gap <= 10` and pure rule evaluator.
+Brand lookup is exact after trimming the supplied name; missing/duplicate brands return
+UNKNOWN (`brand_not_found` / `ambiguous_brand`). Only human-verified `seller`,
+`site_operator` or historical `operated_by` links to GB entities are eligible, subject
+to the existing >=0.9 confidence and current validity-date checks. Zero eligible entities
+returns `no_verified_commerce_entity`; multiple distinct entities returns
+`ambiguous_legal_entity`. Several eligible links to the same entity are not competing
+entities: all relationship IDs are retained, and `relationship_type` is an array if
+more than one eligible role applies, otherwise a string.
+
+Selects the latest verified reporting period, accepting human- or auto-verified evidence.
+Missing/invalid evidence returns UNKNOWN with `missing_evidence`; tied latest records
+remain UNKNOWN with `ambiguous_evidence`. Invalid latest evidence never causes fallback
+to an older passing value. Numeric strings are not coerced. Evidence values, source and
+reporting period are retained without creating or reinterpreting claims. The JSON output
+includes brand/entity/company, role and relationship verification, criterion/threshold,
+observed value, source/period, final status/reason and this scope statement:
+
+> Evaluation applies to the verified UK commerce entity associated with the brand; it does not assert that this entity is the ultimate parent, manufacturer, brand owner, or employer unless separately evidenced.
+
+This command uses server-side GET queries only. It does not persist an evaluation,
+write to the graph, approve candidates or invoke the resolver. Existing product-evaluator
+behaviour is unchanged.

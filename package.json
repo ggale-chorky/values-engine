@@ -19,7 +19,8 @@
     "resolution:approve": "node --import tsx src/scripts/resolution-review.ts approve",
     "resolution:reject": "node --import tsx src/scripts/resolution-review.ts reject",
     "resolution:import": "node --import tsx src/scripts/import-resolution-results.ts",
-    "resolution:verified": "node --import tsx src/scripts/resolution-verified.ts"
+    "resolution:verified": "node --import tsx src/scripts/resolution-verified.ts",
+    "policy:evaluate-brand": "node --import tsx src/scripts/evaluate-brand.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
