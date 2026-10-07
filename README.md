@@ -852,3 +852,17 @@ underlying unique key still prevents duplicate records with concurrent retries.
 The whole file is not one database transaction: on a transport/database failure,
 completed rows remain safely stored; retry the unchanged artifact to resume. A failed
 command returns a nonzero exit status and does not print a success summary.
+
+### List human-verified relationships (read-only)
+
+```sh
+npm run resolution:verified
+```
+
+This server-only command issues paginated GET queries for `human_verified`
+brand→legal-entity relationships. It prints JSONL containing relationship ID, brand,
+legal entity, company number, exact relationship type, source URL, verification status
+and `last_verified_at`. Missing company numbers or dates remain null. An empty result
+prints no rows. It makes no writes or approval calls and does not rerun the resolver.
+The listing filters verification status only; it does not imply current date validity
+or reinterpret a relationship's role. It uses the existing server environment configuration.
