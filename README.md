@@ -700,3 +700,95 @@ This affects REVIEW display only; competing verified shopping entities remain RE
 The harness records `resolver_version: V2.4.1` and keeps Beauty UK v1 labelled
 `regression_comparison`. Existing run directories, the frozen dataset/manifest and
 migrations are preserved. No live V2.4.1 regression measurement is claimed here.
+
+### Persistent resolution review (migration 0003, server-only)
+
+The policy scope is **UK commerce entity**: the verified UK seller/site operator
+through which a consumer transacts with or accesses the brand. This does not identify
+an ultimate parent, brand owner, manufacturer or employer unless separately evidenced.
+Resolver V2.4.1 remains frozen; persistence consumes an existing result and never
+reruns discovery, extraction or Companies House verification.
+
+Migration `0003_resolution_review.sql` adds:
+
+- `resolution_runs`: immutable ingestion identity/fingerprint, optional brand FK,
+  brand/domain/GB market, resolver version/Git SHA, action/reason and complete raw result.
+- `resolution_candidates`: each numbered/named proposal, exact role, source/channel,
+  verification and full candidate provenance, pending/approved/rejected status,
+  review note/time and approved relationship FK. PROPOSE is always initially pending.
+- Nullable unique `brands.resolution_domain` for repeatable domain-based brand identity;
+  existing brands can be reused by explicit ID or an unambiguous matching website.
+- `brand_entity_relationships.provenance` to append approval evidence and run/candidate
+  references without deleting earlier approval history.
+
+The new tables and RPCs revoke PUBLIC/anon/authenticated access and grant service-role
+access. Functions are SECURITY INVOKER with a fixed search path. No RLS policies or
+browser interfaces are added. Migration 0003 must be applied separately by an operator
+before using the commands; development tests use local PGlite only.
+
+Server ingestion uses `ingestResolutionResult(store, input)` from
+`src/review/resolution-review.ts`, with a store made by
+`createResolutionReviewStore(createServerClient())`. Supply:
+
+```ts
+await ingestResolutionResult(store, {
+  run_key: 'benchmark:<saved-run-id>:<brand-domain>',
+  brand_name: savedBrandName,
+  brand_domain: savedDomain,
+  // Optional: brand_id for an existing canonical brand, git_commit_sha for provenance.
+  result: savedResolverResult,
+  // Optional: overall_action: 'ERROR', reason: savedOperationalErrorCode
+});
+```
+
+Use a stable key for retries of the *same* saved run. New runs need new keys, even
+for the same brand. PostgreSQL hashes canonical JSONB input and rejects reuse of a
+key with different content. Replays return the same run without resetting decisions.
+Run and candidate insertion is one atomic RPC; it creates no brands, legal entities
+or trusted relationships. UNRESOLVED/ERROR runs can be retained with no candidates.
+Candidate provenance stores the full proposal, and `raw_result` stores the entire
+resolver result, including secondary evidence. Do not pass secrets, request headers
+or environment objects as resolver results.
+
+With trusted server environment configuration (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`):
+
+```sh
+npm run resolution:queue
+npm run resolution:approve -- --candidate <uuid>
+npm run resolution:approve -- --candidate <uuid> --note "Checked the cited UK terms; confirmed this mapping."
+npm run resolution:reject -- --candidate <uuid> --note "Unrelated entity or role."
+```
+
+Queue output is JSONL with candidate ID, brand, run/candidate action, legal entity,
+company number, exact role, source URL and reasons. Use the persisted provenance/raw
+result to inspect the evidence before an approval; the queue listing alone is not a
+review of all evidence. Importing modules does not read `.env`, construct a database
+client or make network calls. Only invoking a CLI action connects to the server.
+
+Explicit approval is one PostgreSQL transaction: lock the candidate and domain,
+resolve the brand, upsert the canonical GB registry identity, insert/update the exact
+brand/entity/role relationship, append provenance, set `human_verified` and verification
+time, then mark the candidate approved. Human approval sets relationship confidence
+to 1 as an explicit review decision; the resolver's heuristic confidence remains in
+provenance. Existing relationship validity dates are preserved, so approving an expired
+relationship does not silently extend it. Errors roll back the entire transaction.
+Repeated approvals return the same relationship without appending duplicate audit entries.
+
+Approval requires a stored active, matching Companies House identity and validated GB
+brand/source context. REVIEW/conflict candidates require a note explaining the human
+judgment. No live lookup is performed: reviewers must assess the freshness of the saved
+evidence. This workflow accepts seller/site_operator/brand_operator roles; promoter,
+licensor, data_controller, service_operator and unknown remain in the queue for rejection
+or a future separately scoped workflow. Roles are never converted to ownership.
+
+Rejection only marks a pending candidate rejected. It cannot modify the trusted graph.
+Approved/rejected decisions cannot be reversed using the other command; revocation is a
+separate future workflow. Multiple human-approved roles/entities remain distinct, and
+existing evaluator ambiguity safeguards still apply. Reviewer identity/auth integration
+is not yet implemented: access is restricted to trusted server operators, with review
+notes, timestamps and candidate/run references retained for audit.
+
+The transactional domain lock serialises approvals through these RPCs. Other privileged
+code must not concurrently invent duplicate brand relationships outside this workflow.
+Pre-existing ambiguous brands or duplicate same-role relationships fail closed and require
+reconciliation; migration 0003 does not rewrite historical graph records.
