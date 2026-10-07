@@ -914,13 +914,14 @@ connecting. Each invocation creates a new policy UUID and exactly one rule; it
 never appends rules to an existing policy. Repeated names are permitted by the
 schema. Select duplicate names by UUID; exact-name lookup never guesses.
 
-No migration is needed. Creation uses separate REST writes: insert an inactive
-policy, insert its rule, then activate. Success produces an active policy. These
-writes are not a transaction. Failure reports the policy UUID for inspection;
-a partial policy can remain inactive, and an ambiguous final network failure may
-mean activation completed. There are no automatic retries. Retrying the whole
-command creates a new policy, not an idempotent replay. Rule primary keys prevent
-duplicating the same insert; this CLI provides no way to append duplicate rules.
+Migration `0004_atomic_policy_creation.sql` adds the server-only
+`create_gender_pay_policy` RPC. Creation uses one transactional RPC call: insert
+an inactive policy, insert its fixed gender-pay rule, then activate and return
+both `policy_id` and `rule_id`. A database failure rolls back both rows. The CLI
+performs no partial repair or automatic retries. A lost response can leave the
+client uncertain whether the complete transaction committed; inspect before
+retrying, since a new call creates a new policy. Existing partial policies are
+not changed by this migration.
 
 Listing is ordered by policy name, then policy UUID and rule UUID. It includes
 inactive policies and policies missing rules. Evaluation loads the selected

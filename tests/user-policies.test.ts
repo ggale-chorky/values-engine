@@ -1,6 +1,7 @@
+import { createPolicyCreator } from '../src/policies/creation.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
-import { createReadDatabase, createWriteDatabase } from '../src/db/database.js';
+import { createReadDatabase } from '../src/db/database.js';
 import { createPolicy, listPolicies, selectPolicy, validatePolicyInput } from '../src/policies/service.js';
 import { evaluateBrandFromDb } from '../src/evaluation/evaluate-brand-from-db.js';
 import { main as evaluateCli } from '../src/scripts/evaluate-brand.js';
@@ -26,39 +27,28 @@ function fixture() {
 async function evaluate(db: FakeDatabase) { return evaluateBrandFromDb(db, 'Example', '2026-10-07', await selectPolicy(db, policyId)); }
 
 describe('user policy creation', () => {
-  it('creates one active policy with exactly one structured rule, never appending duplicate rules', async () => {
-    const db = new FakeDatabase();
-    const first = await createPolicy(db, ' Personal ', '5');
-    const second = await createPolicy(db, 'Personal', '6');
-    expect(first).toMatchObject({ policy_name: 'Personal', active: true, threshold: 5 });
-    expect(first.policy_id).not.toBe(second.policy_id);
-    for (const policy of db.tables.policies) {
-      expect(policy.is_active).toBe(true);
-      expect(db.tables.policy_rules.filter(rule => rule.policy_id === policy.id)).toHaveLength(1);
-    }
-    expect(db.tables.policy_rules[0]).toMatchObject({ criterion: 'uk_median_gender_pay_gap', operator: '<=', threshold_numeric: 5,
-      threshold_text: null, action: 'REQUIRE', unknown_handling: 'UNKNOWN' });
-    expect(db.writes.map(write => write.table)).toEqual(['policies', 'policy_rules', 'policies', 'policies', 'policy_rules', 'policies']);
+  it('returns both identifiers from one creation call', async () => {
+    const creator = { create: vi.fn().mockResolvedValue({ policy_id: policyId, rule_id: 'rule-id' }) };
+    expect(await createPolicy(creator, ' Personal ', '5')).toMatchObject({ policy_id: policyId, rule_id: 'rule-id', active: true, threshold: 5 });
+    expect(creator.create).toHaveBeenCalledExactlyOnceWith('Personal', 5);
   });
   it.each(['', ' ', 'abc', '10%', '10abc', 'NaN', 'Infinity', '-Infinity', '1e999', '0x10', '1,5'])('rejects malformed threshold %j before writing', async threshold => {
-    const db = new FakeDatabase();
+    const db = { create: vi.fn() };
     await expect(createPolicy(db, 'Name', threshold)).rejects.toThrow('finite');
-    expect(db.writes).toEqual([]);
+    expect(db.create).not.toHaveBeenCalled();
   });
   it.each(['-0.7', '0', '10', '18.95', '1e2'])('accepts finite decimal %s without changing its semantics', value => {
     expect(validatePolicyInput('Name', value).threshold).toBe(Number(value));
   });
-  it('requires a name', async () => {
-    const db = new FakeDatabase();
-    await expect(createPolicy(db, ' ', '10')).rejects.toThrow('name');
-    expect(db.writes).toEqual([]);
+  it('requires a name before calling the RPC', async () => {
+    const creator = { create: vi.fn() };
+    await expect(createPolicy(creator, ' ', '10')).rejects.toThrow('name');
+    expect(creator.create).not.toHaveBeenCalled();
   });
-  it('keeps a policy inactive when rule insertion fails and does not retry', async () => {
-    const db = new FakeDatabase(); db.failAfter = 1;
-    await expect(createPolicy(db, 'Name', '10')).rejects.toThrow('policy_id=');
-    expect(db.tables.policies[0]!.is_active).toBe(false);
-    expect(db.tables.policy_rules).toEqual([]);
-    expect(db.writes).toHaveLength(1);
+  it('does not repair or retry RPC failure', async () => {
+    const creator = { create: vi.fn().mockRejectedValue(new Error('private transport details')) };
+    await expect(createPolicy(creator, 'Name', '10')).rejects.toThrow('No repair or retry');
+    expect(creator.create).toHaveBeenCalledTimes(1);
   });
   it('validates CLI input before connecting', async () => {
     const write = vi.fn();
@@ -66,7 +56,7 @@ describe('user policy creation', () => {
     expect(write).not.toHaveBeenCalled();
   });
   it('creates through the CLI', async () => {
-    const db = new FakeDatabase(); const log = vi.fn();
+    const db = { create: vi.fn().mockResolvedValue({ policy_id: policyId, rule_id: 'rule-id' }) }; const log = vi.fn();
     await policyCli(['create', '--name', 'Name', '--max-gender-pay-gap', '7'], { write: async () => db, log });
     expect(JSON.parse(log.mock.calls[0]![0])).toMatchObject({ active: true, threshold: 7 });
   });
@@ -147,14 +137,18 @@ describe('persisted policy brand evaluation', () => {
     expect(JSON.parse(log.mock.calls[1]![0])).toMatchObject({ policy_id: policyId, threshold: 5, final_status: 'PASS' });
     expect(methods.length).toBeGreaterThan(0); expect(db.tables).toEqual(before); expect(db.writes).toEqual([]);
   });
-  it('creation transport writes only policies and policy_rules', async () => {
-    const requests: { table: string; method: string }[] = [];
+  it.each([false, true])('creation uses one RPC POST and no follow-up table writes (failure=%s)', async failure => {
+    const requests: { path: string; method: string }[] = [];
+    const ruleId = '22222222-2222-4222-8222-222222222222';
     const client = createClient('https://example.test', 'test-only', { global: { fetch: async (input, init) => {
-      const table = new URL(String(input)).pathname.split('/').at(-1)!;
-      requests.push({ table, method: init!.method! });
-      return new Response(JSON.stringify([{ id: 'created' }]), { headers: { 'Content-Type': 'application/json' } });
+      requests.push({ path: new URL(String(input)).pathname, method: init!.method! });
+      expect(JSON.parse(String(init?.body))).toEqual({ p_name: 'Policy', p_threshold: 3 });
+      return new Response(JSON.stringify(failure ? { message: 'private error' } : [{ policy_id: policyId, rule_id: ruleId }]),
+        { status: failure ? 400 : 200, headers: { 'Content-Type': 'application/json' } });
     } } });
-    await createPolicy(createWriteDatabase(client), 'Policy', '3');
-    expect(requests).toEqual([{ table: 'policies', method: 'POST' }, { table: 'policy_rules', method: 'POST' }, { table: 'policies', method: 'PATCH' }]);
+    const result = createPolicy(createPolicyCreator(client), 'Policy', '3');
+    if (failure) await expect(result).rejects.toThrow('Policy creation RPC failed');
+    else expect(await result).toMatchObject({ policy_id: policyId, rule_id: ruleId });
+    expect(requests).toEqual([{ path: '/rest/v1/rpc/create_gender_pay_policy', method: 'POST' }]);
   });
 });

@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import type { ReadDatabase, WriteDatabase } from '../db/database.js';
+import type { PolicyCreator } from './creation.js';
+import type { ReadDatabase } from '../db/database.js';
 import { DataError, parseRows, policyRow, ruleRow } from '../db/rows.js';
 import { ruleProblem } from '../evaluation/evaluate-rule.js';
 import type { PolicyRule } from '../evaluation/types.js';
@@ -20,22 +20,16 @@ export function validatePolicyInput(name: string, threshold: string): { name: st
   return { name: name.trim(), threshold: Number(threshold) };
 }
 
-/** Creates a new policy identity with exactly one rule; never appends to an existing policy. */
-export async function createPolicy(db: WriteDatabase, name: string, threshold: string) {
+/** One atomic database call; never attempt partial repair or automatic retries. */
+export async function createPolicy(creator: PolicyCreator, name: string, threshold: string) {
   const input = validatePolicyInput(name, threshold);
-  const id = randomUUID();
-  const ruleId = randomUUID();
-  // REST writes are not transactional. Activate only once the rule insert succeeds.
-  // Do not retry ambiguous writes: primary keys prevent duplicated rules on replay.
+  let identifiers;
   try {
-    await db.insert('policies', { id, name: input.name, user_id: null, is_active: false });
-    await db.insert('policy_rules', { id: ruleId, policy_id: id, criterion: 'uk_median_gender_pay_gap',
-      operator: '<=', threshold_numeric: input.threshold, threshold_text: null, action: 'REQUIRE', unknown_handling: 'UNKNOWN' });
-    await db.update('policies', id, { is_active: true });
+    identifiers = await creator.create(input.name, input.threshold);
   } catch {
-    throw new DataError(`Policy creation did not complete cleanly (policy_id=${id}). Inspect this policy before retrying; writes may have completed.`);
+    throw new DataError('Policy creation RPC failed or its result could not be confirmed. Database errors roll back both rows; a lost response may mean the complete policy was created. No repair or retry was attempted.');
   }
-  return { policy_id: id, policy_name: input.name, active: true, criterion: 'uk_median_gender_pay_gap', operator: '<=', threshold: input.threshold, unknown_handling: 'UNKNOWN' };
+  return { ...identifiers, policy_name: input.name, active: true, criterion: 'uk_median_gender_pay_gap', operator: '<=', threshold: input.threshold, unknown_handling: 'UNKNOWN' };
 }
 
 export async function selectPolicy(db: ReadDatabase, selector: string): Promise<SelectedPolicy> {

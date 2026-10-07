@@ -1,13 +1,15 @@
+import { createPolicyCreator } from '../policies/creation.js';
+import type { PolicyCreator } from '../policies/creation.js';
 import { parseArgs } from 'node:util';
-import { createReadDatabase, createWriteDatabase } from '../db/database.js';
-import type { ReadDatabase, WriteDatabase } from '../db/database.js';
+import { createReadDatabase } from '../db/database.js';
+import type { ReadDatabase } from '../db/database.js';
 import { DataError } from '../db/rows.js';
 import { createPolicy, listPolicies, validatePolicyInput } from '../policies/service.js';
 import { configuredClient, isMain, reportCliError } from './db-cli.js';
 
 export async function main(args: string[], dependencies: {
   read?: () => Promise<ReadDatabase>;
-  write?: () => Promise<WriteDatabase>;
+  write?: () => Promise<PolicyCreator>;
   log?: (text: string) => void;
 } = {}) {
   const [command, ...rest] = args;
@@ -15,7 +17,7 @@ export async function main(args: string[], dependencies: {
   if (command === 'create') {
     const { values } = parseArgs({ args: rest, strict: true, options: { name: { type: 'string' }, 'max-gender-pay-gap': { type: 'string' } } });
     validatePolicyInput(values.name ?? '', values['max-gender-pay-gap'] ?? '');
-    const db = await (dependencies.write ?? (async () => createWriteDatabase(await configuredClient())))();
+    const db = await (dependencies.write ?? (async () => createPolicyCreator(await configuredClient())))();
     result = await createPolicy(db, values.name!, values['max-gender-pay-gap']!);
   } else if (command === 'list') {
     parseArgs({ args: rest, strict: true, options: {} });
