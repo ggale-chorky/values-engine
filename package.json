@@ -20,7 +20,9 @@
     "resolution:reject": "node --import tsx src/scripts/resolution-review.ts reject",
     "resolution:import": "node --import tsx src/scripts/import-resolution-results.ts",
     "resolution:verified": "node --import tsx src/scripts/resolution-verified.ts",
-    "policy:evaluate-brand": "node --import tsx src/scripts/evaluate-brand.ts"
+    "policy:evaluate-brand": "node --import tsx src/scripts/evaluate-brand.ts",
+    "policy:create": "node --import tsx src/scripts/policies.ts create",
+    "policy:list": "node --import tsx src/scripts/policies.ts list"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

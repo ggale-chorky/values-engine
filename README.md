@@ -896,3 +896,40 @@ observed value, source/period, final status/reason and this scope statement:
 This command uses server-side GET queries only. It does not persist an evaluation,
 write to the graph, approve candidates or invoke the resolver. Existing product-evaluator
 behaviour is unchanged.
+
+### User Policy Layer V1
+
+Create and list persisted policies (server-side CLI):
+
+```sh
+npm run policy:create -- --name "My purchasing policy" --max-gender-pay-gap 10
+npm run policy:list
+npm run policy:evaluate-brand -- --brand "<brand name>" --policy "<policy name or UUID>"
+```
+
+Creation supports one numeric `uk_median_gender_pay_gap <= threshold` REQUIRE rule,
+with `unknown_handling=UNKNOWN`. Finite decimal percentages, including negative
+values, are accepted; blank, malformed and non-finite values are rejected before
+connecting. Each invocation creates a new policy UUID and exactly one rule; it
+never appends rules to an existing policy. Repeated names are permitted by the
+schema. Select duplicate names by UUID; exact-name lookup never guesses.
+
+No migration is needed. Creation uses separate REST writes: insert an inactive
+policy, insert its rule, then activate. Success produces an active policy. These
+writes are not a transaction. Failure reports the policy UUID for inspection;
+a partial policy can remain inactive, and an ambiguous final network failure may
+mean activation completed. There are no automatic retries. Retrying the whole
+command creates a new policy, not an idempotent replay. Rule primary keys prevent
+duplicating the same insert; this CLI provides no way to append duplicate rules.
+
+Listing is ordered by policy name, then policy UUID and rule UUID. It includes
+inactive policies and policies missing rules. Evaluation loads the selected
+policy and its structured rule from the database, including its threshold;
+it uses the existing deterministic evaluator and verified UK commerce graph.
+Inactive policies, incomplete/multiple rules and unsupported criteria/operators
+return UNKNOWN. Missing/ambiguous entities and missing evidence remain UNKNOWN.
+Unknown or ambiguous policy names fail with an explicit CLI error. Without
+`--policy`, the existing demo rule (`<= 10`) remains available, with null policy
+identity fields. Both listing and evaluation are read-only and never save an
+`evaluations` row. Output includes policy identity, operator and the existing
+entity, evidence and scope fields. No natural-language interpretation is used.
