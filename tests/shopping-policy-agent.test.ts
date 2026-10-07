@@ -27,6 +27,18 @@ describe('agent demo through mocked MCP', () => {
     expect(call).toHaveBeenCalledExactlyOnceWith(POLICY_TOOL, { brand: 'Example', policy: input.policy });
     expect(fake.close).toHaveBeenCalledTimes(1);
   });
+  it('optionally exposes a copy of the actual MCP provenance without changing its decision', async () => {
+    const { deps, call, value } = fixture('UNKNOWN');
+    const full = { ...value, evidence: { observed_value: null, source_url: null }, scope: 'Actual MCP scope' };
+    call.mockResolvedValue({ structuredContent: full, content: [] });
+    const onDecision = vi.fn((observed: unknown) => {
+      expect(observed).toEqual(full);
+      (observed as { decision: string }).decision = 'FAIL';
+    });
+    expect(await runShoppingPolicyDemo(input, { ...deps, onDecision })).toMatchObject({ decision: 'UNKNOWN', reason: 'missing_evidence' });
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(full.decision).toBe('UNKNOWN');
+  });
   it('launches the existing stdio MCP from the repository, forces tool use and supplies exact application policy', async () => {
     const { deps } = fixture(); await runShoppingPolicyDemo(input, deps);
     expect(deps.createServer).toHaveBeenCalledWith(expect.objectContaining({ command: 'npm', args: ['run', 'mcp:stdio'], cwd: DEMO_ROOT, useStructuredContent: true }));

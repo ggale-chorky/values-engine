@@ -1047,3 +1047,41 @@ concise evidence-aware language and the UK commerce entity scope distinction,
 without general ethical judgements. SDK tracing is disabled for this demo run;
 errors are sanitized, and credentials never appear in command arguments. Tests
 mock the model and MCP connection; no live demo is run during verification.
+
+### Founder Demo Web UI V1
+
+```sh
+npm run demo:web
+```
+
+Open **http://127.0.0.1:4310**. This is a local, loopback-only founder demo with
+one question field and the fixed persisted policy **My purchasing policy**.
+It uses the existing server-side `.env` configuration; credentials never go to
+the browser. There is no policy editing, authentication or production hosting.
+
+Request flow: browser → Agent Demo V1 → local MCP → Values Engine → agent →
+browser. The structured result is primary; the assistant's prose is secondary.
+An optional presentation observer on Agent Demo exposes a copy of its actual
+MCP decision, including provenance, without changing its decision behaviour.
+The web server checks the successful tool invocation, tool name, policy and
+matching decision/reason before rendering. No policy or threshold comparison
+is performed in the UI. UNKNOWN is a successful result, distinct from an
+operational failure. Source links allow absolute HTTP(S) URLs without embedded
+credentials; all dynamic HTML is escaped. The browser receives only selected
+result fields and integrity metadata, never configuration or raw SDK objects.
+
+Suggested live examples (not hard-coded outcomes):
+
+- Lush: expected PASS under the current persisted policy.
+- Vichy: expected FAIL.
+- Molton Brown: useful UNKNOWN example if current graph coverage is unchanged.
+
+The policy card initially previews the current demo setup, UK median gender pay
+gap ≤ 10%. After each check it displays the rule returned by MCP, so a changed
+persisted threshold is not presented as 10%. Every shortcut submits a natural
+language question through the same real agent/MCP path. Evidence may change;
+the live response always supplies the displayed decision.
+
+Tests use injected agents and temporary loopback HTTP servers, with no live
+OpenAI/database calls. The demo prevents duplicate in-flight checks, restricts
+requests to its local origin and returns sanitized operational failures.

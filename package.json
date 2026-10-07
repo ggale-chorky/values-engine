@@ -25,7 +25,8 @@
     "policy:list": "node --import tsx src/scripts/policies.ts list",
     "decision:brand": "node --import tsx src/scripts/decision-brand.ts",
     "mcp:stdio": "node --import tsx src/mcp/server.ts",
-    "demo:agent": "node --import tsx src/scripts/demo-agent.ts"
+    "demo:agent": "node --import tsx src/scripts/demo-agent.ts",
+    "demo:web": "node --import tsx src/scripts/demo-web.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",

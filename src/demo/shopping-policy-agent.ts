@@ -23,6 +23,8 @@ Mention relevant evidence and reporting period when available. Keep your answer 
 
 export interface DemoDependencies {
   apiKey: string | undefined;
+  /** Optional presentation observer; receives a copy of the successful MCP response. */
+  onDecision?: (value: unknown) => void;
   createServer?: (options: ConstructorParameters<typeof MCPServerStdio>[0]) => MCPServerStdio;
   execute?: (agent: Agent, prompt: string) => Promise<{ finalOutput?: unknown }>;
 }
@@ -51,11 +53,13 @@ export async function runShoppingPolicyDemo(input: ShoppingDemoInput, dependenci
       const result = await call(...args);
       if (result.isError) throw new AgentDemoError('Values Engine could not evaluate the selected brand policy.');
       const text = result.content.find(item => item.type === 'text');
-      const parsed = decisionSchema.safeParse(result.structuredContent ?? (text?.type === 'text' && typeof text.text === 'string' ? JSON.parse(text.text) : null));
+      const rawDecision = result.structuredContent ?? (text?.type === 'text' && typeof text.text === 'string' ? JSON.parse(text.text) : null);
+      const parsed = decisionSchema.safeParse(rawDecision);
       if (!parsed.success || (parsed.data.policy.name !== request.policy && parsed.data.policy.id.toLowerCase() !== request.policy.toLowerCase())) {
         throw new AgentDemoError('Values Engine returned an invalid or mismatched policy decision.');
       }
       observed = parsed.data;
+      dependencies.onDecision?.(structuredClone(rawDecision));
       return result;
     };
     await server.connect();
