@@ -23,9 +23,11 @@
     "policy:evaluate-brand": "node --import tsx src/scripts/evaluate-brand.ts",
     "policy:create": "node --import tsx src/scripts/policies.ts create",
     "policy:list": "node --import tsx src/scripts/policies.ts list",
-    "decision:brand": "node --import tsx src/scripts/decision-brand.ts"
+    "decision:brand": "node --import tsx src/scripts/decision-brand.ts",
+    "mcp:stdio": "node --import tsx src/mcp/server.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
     "@supabase/supabase-js": "^2.117.2",
     "csv-parse": "^7.0.3",
     "dotenv": "^18.0.5",

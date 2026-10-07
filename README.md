@@ -965,3 +965,28 @@ perform a second comparison. The existing UK commerce entity scope statement
 is preserved verbatim. Invalid input, missing/ambiguous policy lookup and
 operational database errors remain errors (CLI stderr/nonzero exit), rather
 than being disguised as evidence-related UNKNOWN decisions.
+
+### Local MCP Interface V1
+
+```sh
+npm run mcp:stdio
+```
+
+This local stdin/stdout server exposes exactly one read-only tool:
+`evaluate_brand_policy({ brand, policy })`. Both arguments must be non-empty
+strings; `policy` is a persisted policy UUID or exact name. It delegates to
+Decision Service V1 using the existing server-side environment configuration.
+Configuration is loaded lazily on a tool call, not on server import/startup.
+
+The complete decision is returned as MCP `structuredContent` and as a compact
+JSON text block. Nulls, raw evidence URLs, reason codes, scope and explanation
+are preserved. Domain UNKNOWN outcomes are normal tool results. Invalid
+arguments are rejected by the SDK; operational failures produce a sanitized
+`isError` tool result without credentials or stack traces. There is no HTTP
+listener, additional tool, or MCP-layer evaluation logic.
+
+The server uses the official `@modelcontextprotocol/server` v2 SDK and its stdio
+transport. stdout is reserved for protocol messages; application diagnostics go
+to stderr. Project `.npmrc` uses `loglevel=silent` to suppress npm's command banner
+(including for other npm commands). Tests exercise an in-memory local transport
+with mocked decisions and do not call a live database.
