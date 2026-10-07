@@ -17,7 +17,8 @@
     "benchmark:resolver": "node --import tsx src/scripts/benchmark-resolver.ts",
     "resolution:queue": "node --import tsx src/scripts/resolution-review.ts queue",
     "resolution:approve": "node --import tsx src/scripts/resolution-review.ts approve",
-    "resolution:reject": "node --import tsx src/scripts/resolution-review.ts reject"
+    "resolution:reject": "node --import tsx src/scripts/resolution-review.ts reject",
+    "resolution:import": "node --import tsx src/scripts/import-resolution-results.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

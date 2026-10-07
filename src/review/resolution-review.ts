@@ -19,10 +19,11 @@ const candidateSchema = z.object({
 const payloadSchema = z.object({
   brand_id: uuid.nullable(), brand_name: nonempty,
   brand_domain: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/),
-  target_market: z.literal('GB'), resolver_version: z.literal('V2.4.1'),
+  target_market: z.literal('GB'), resolver_version: z.enum(['V2.3', 'V2.4', 'V2.4.1']),
   git_commit_sha: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
   overall_action: action, reason: nonempty, raw_result: object, candidates: z.array(candidateSchema),
 });
+export const validateResolutionPayload = (value: unknown) => payloadSchema.parse(value);
 export type ResolutionPayload = z.infer<typeof payloadSchema>;
 export interface IngestResolutionInput {
   /** Stable caller-provided event/run identity; do not use brand/domain alone across new runs. */

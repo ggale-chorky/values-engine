@@ -792,3 +792,63 @@ The transactional domain lock serialises approvals through these RPCs. Other pri
 code must not concurrently invent duplicate brand relationships outside this workflow.
 Pre-existing ambiguous brands or duplicate same-role relationships fail closed and require
 reconciliation; migration 0003 does not rewrite historical graph records.
+
+### Import saved benchmark results into review
+
+```sh
+npm run resolution:import -- --file benchmarks/runs/<saved-run>/results.jsonl --dry-run --label "Saved benchmark"
+npm run resolution:import -- --file benchmarks/runs/<saved-run>/results.jsonl --label "Saved benchmark"
+```
+
+This imports existing records only. It never invokes the resolver, discovery, registry,
+review approval/rejection or graph-writing functions. Migration 0003 must already be
+available on the target server; the importer does not apply migrations.
+
+The importer reads the adjacent `summary.json` for the original resolver version,
+Git SHA and benchmark metadata. Explicit per-row `metadata` is also accepted; version
+or Git-SHA disagreements with the summary fail closed. Supported historical versions
+are V2.3, V2.4 and V2.4.1. Missing resolver version is an error, never a reason to assume
+the current version. A genuinely unavailable Git SHA is stored as null.
+
+Every row becomes one `resolution_run`. `raw_result` contains the complete original
+JSON record under `benchmark_record`, the original summary under `benchmark_summary`,
+resolved metadata under `benchmark_metadata`, and a canonical content snapshot hash.
+All original resolver fields, secondary evidence, diagnostics and operational errors
+are retained. Candidate provenance is the entire original proposal. Existing action,
+reason, role, number, verification and source values are copied without re-running
+modern resolution rules, normalising identifiers or guessing omitted facts. JSON values
+are preserved; JSONB does not preserve source-file whitespace/key order. An ERROR row
+with a null resolver result remains a run with no candidate rows. ERROR rows that have
+candidate evidence retain it. Named/numbered proposals become pending review candidates;
+identifier-free diagnostics remain in the complete raw result.
+
+Identity combines original run metadata (timestamp **plus** version, available Git SHA,
+dataset/source hashes and model configuration) with the row's brand/domain/market.
+When that run provenance is insufficient, identity additionally uses a canonical
+whole-file content hash. File paths and `--label` are not identity inputs; `--label`
+is a display label in the CLI report, not a mutable persisted field. Copies of the same
+saved artifact remain idempotent. JSON whitespace/key ordering does not change the
+content hash. Preserve saved artifacts as immutable snapshots: edits or partial-file
+extensions can produce a fingerprint conflict, and are not treated as an update to
+existing history. Without run provenance, changed file content identifies a new snapshot.
+
+The entire JSONL and metadata are validated before any database client is constructed
+or row imported. Invalid JSON, malformed candidate data, duplicate inputs, missing
+metadata or unsupported markets fail with a safe line/error message. No malformed
+payloads are echoed. Each valid row uses the existing atomic ingestion RPC, which
+also checks the stored input fingerprint on retries. Existing review decisions are
+never reset. Importing cannot create brands, legal entities or trusted relationships.
+
+Dry-run loads no environment configuration, creates no database client, calls no APIs
+and writes no records. Its report has zero imported counts, planned run/candidate
+counts, action counts, `database_calls: 0`, and `expected_pending_if_new`. Actual
+`pending_review_count` is null because existing reviews cannot be checked offline.
+
+Live summaries report `runs_imported`, `candidates_imported`, `skipped_existing_runs`,
+`action_counts` for the input, and the actual pending-candidate count across those runs
+(including previously imported runs). Existence is checked before each RPC; use one
+importer per artifact for exact new-versus-skipped reporting under concurrency. The
+underlying unique key still prevents duplicate records with concurrent retries.
+The whole file is not one database transaction: on a transport/database failure,
+completed rows remain safely stored; retry the unchanged artifact to resume. A failed
+command returns a nonzero exit status and does not print a success summary.
