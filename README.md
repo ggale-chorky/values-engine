@@ -934,3 +934,34 @@ Unknown or ambiguous policy names fail with an explicit CLI error. Without
 identity fields. Both listing and evaluation are read-only and never save an
 `evaluations` row. Output includes policy identity, operator and the existing
 entity, evidence and scope fields. No natural-language interpretation is used.
+
+### Decision Service V1
+
+```sh
+npm run decision:brand -- --brand "<brand>" --policy "<exact policy name or UUID>"
+```
+
+The read-only CLI prints a single JSON decision object. Server code can call
+`evaluateBrandDecision({ brand, policy }, { db, asOf? })` from
+`src/decision/evaluate-brand-decision.ts`, supplying the existing `ReadDatabase`
+capability. An explicit persisted policy is required. Policy lookup uses
+`selectPolicy`; evaluation delegates to `evaluateBrandFromDb`, which retains
+all graph, evidence and deterministic rule semantics. No evaluation is saved.
+
+The V1 contract contains `decision` (PASS/FAIL/UNKNOWN), `reason`, `policy`
+(id/name), `rule` (criterion/operator/threshold), `subject` (brand), `entity`
+(legal_name/company_number/relationship_type/verification_status), `evidence`
+(observed_value/unit/reporting_period/source_name/source_url/evidence_id),
+`scope` and a deterministic `explanation`. Relationship type retains the existing
+string-or-array representation. Unavailable fields are null. A percent unit is
+reported only when the evaluator has validated evidence for PASS/FAIL; UNKNOWN
+uses null because the existing evaluation output exposes no validated unit.
+
+Reason codes are `threshold_met`, `threshold_exceeded`, `missing_evidence`,
+`no_verified_commerce_entity`, `ambiguous_legal_entity`, `unsupported_rule`,
+`invalid_rule`, `inactive_policy`, `brand_not_found`, `ambiguous_brand` and
+`ambiguous_evidence`. Explanations describe the structured result and never
+perform a second comparison. The existing UK commerce entity scope statement
+is preserved verbatim. Invalid input, missing/ambiguous policy lookup and
+operational database errors remain errors (CLI stderr/nonzero exit), rather
+than being disguised as evidence-related UNKNOWN decisions.

@@ -22,7 +22,8 @@
     "resolution:verified": "node --import tsx src/scripts/resolution-verified.ts",
     "policy:evaluate-brand": "node --import tsx src/scripts/evaluate-brand.ts",
     "policy:create": "node --import tsx src/scripts/policies.ts create",
-    "policy:list": "node --import tsx src/scripts/policies.ts list"
+    "policy:list": "node --import tsx src/scripts/policies.ts list",
+    "decision:brand": "node --import tsx src/scripts/decision-brand.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
