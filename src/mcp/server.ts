@@ -1,3 +1,4 @@
+import { reportMcpFailure } from '../runtime/mcp-diagnostics.js';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
@@ -14,10 +15,13 @@ export function createMcpServer(decide: DecisionService = configuredBrandDecisio
     inputSchema: z.object({ brand: z.string().trim().min(1), policy: z.string().trim().min(1) }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async input => {
+    let stage: 'mcp_handler' | 'response_serialization' = 'mcp_handler';
     try {
       const decision = await decide(input);
+      stage = 'response_serialization';
       return { structuredContent: { ...decision }, content: [{ type: 'text' as const, text: JSON.stringify(decision) }] };
-    } catch {
+    } catch (error) {
+      reportMcpFailure(error, stage);
       return { isError: true, content: [{ type: 'text' as const, text: 'Unable to evaluate the brand policy. Check the brand/policy inputs and server configuration.' }] };
     }
   });

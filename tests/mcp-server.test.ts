@@ -90,3 +90,14 @@ it('has no threshold/evidence/DB logic in the MCP layer and silences npm banners
   expect(source).not.toMatch(/console\.log|process\.stdout\.write/);
   expect(await readFile(new URL('../.npmrc', import.meta.url), 'utf8')).toContain('loglevel=silent');
 });
+it('debug logging leaves the client error identical and emits only safe stderr', async () => {
+  vi.stubEnv('VALUES_ENGINE_MCP_DEBUG', '1');
+  const stderr = vi.spyOn(console, 'error').mockImplementation(() => {}); const stdout = vi.spyOn(process.stdout, 'write');
+  try {
+    const { request } = await session(vi.fn().mockRejectedValue(new Error('SECRET=private')));
+    const response = await request('tools/call', { name: 'evaluate_brand_policy', arguments: { brand: 'Example', policy: 'Policy' } });
+    expect(response.result).toEqual({ isError: true, content: [{ type: 'text', text: 'Unable to evaluate the brand policy. Check the brand/policy inputs and server configuration.' }] });
+    expect(JSON.stringify(stderr.mock.calls)).not.toContain('SECRET');
+    expect(stderr).toHaveBeenCalledTimes(1); expect(stdout).not.toHaveBeenCalled();
+  } finally { vi.unstubAllEnvs(); }
+});

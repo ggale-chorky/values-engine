@@ -990,3 +990,26 @@ transport. stdout is reserved for protocol messages; application diagnostics go
 to stderr. Project `.npmrc` uses `loglevel=silent` to suppress npm's command banner
 (including for other npm commands). Tests exercise an in-memory local transport
 with mocked decisions and do not call a live database.
+
+CLI and MCP database configuration share `src/runtime/server-config.ts`. It loads
+this project's gitignored `.env` relative to the runtime module (in either `src` or `dist`),
+not relative to the launching host's working directory. Inherited environment
+variables take precedence; the file is optional when they already supply the
+configuration. Loading is quiet and occurs before constructing the client, with
+no client construction at import time. Configuration values are kept in a local
+environment copy, and bootstrap errors never print their contents. Restart the
+MCP process after changing runtime code or configuration.
+
+#### Optional MCP diagnostics
+
+Enable `VALUES_ENGINE_MCP_DEBUG=1` in the MCP child process environment to emit
+safe failure diagnostics to stderr. The client error stays unchanged. Diagnostics
+contain an allowlisted error category/message, failure stage and, when available,
+configuration-presence booleans captured before client construction. They never
+print arbitrary exception text, environment values, URLs, headers or stacks.
+The flag must be inherited by the process (not merely placed in `.env`).
+
+Local MCP hosts may not inherit configuration exported in an interactive shell.
+Supply the server process environment explicitly or use the gitignored project
+`.env` (following `.env.example`). Never commit that file or credentials. If both
+sources are absent, client construction fails safely with a sanitized error.
