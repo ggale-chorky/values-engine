@@ -1013,3 +1013,37 @@ Local MCP hosts may not inherit configuration exported in an interactive shell.
 Supply the server process environment explicitly or use the gitignored project
 `.env` (following `.env.example`). Never commit that file or credentials. If both
 sources are absent, client construction fails safely with a sanitized error.
+
+### Agent Demo V1
+
+```sh
+npm run demo:agent -- --policy "My purchasing policy" --question "Can I buy from Lush?"
+```
+
+Flow: question → OpenAI agent → local MCP server → Values Engine decision → agent
+response. The AI does not decide whether the policy passes: it interprets the
+question and explains the deterministic Values Engine result. This uses the
+[official Agents SDK's local MCP integration](https://developers.openai.com/api/docs/guides/agents/integrations-observability).
+
+Provide `OPENAI_API_KEY` through the process environment or the gitignored project
+`.env`. The optional `--model` overrides the model; otherwise the SDK's normal
+OpenAI default is used. `runShoppingPolicyDemo({ question, policy, model? })` is
+available in `src/demo/shopping-policy-agent.ts`; the CLI uses the shared
+configuration loader. Never commit credentials.
+
+The demo launches `npm run mcp:stdio` with an explicit repository working
+directory and always closes that connection in `finally`. It forces
+`evaluate_brand_policy` on the first turn, then lets the model explain its result.
+The selected policy is application context, separate from the question; calls
+with a substituted policy are rejected before dispatch. This demo handles one
+brand/tool invocation per run and fails safely for missing, failed, repeated or
+invalid tool results. It enables structured MCP content, retains UNKNOWN as a
+successful result, and never imports Decision Service or database code directly.
+
+CLI output contains `question`, `policy`, `tool_called`, `tool_name`, `decision`,
+`reason` and `answer`. Decision/reason come only from the observed MCP response;
+answer is model-generated prose, not a new policy decision. Instructions require
+concise evidence-aware language and the UK commerce entity scope distinction,
+without general ethical judgements. SDK tracing is disabled for this demo run;
+errors are sanitized, and credentials never appear in command arguments. Tests
+mock the model and MCP connection; no live demo is run during verification.
